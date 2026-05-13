@@ -89,7 +89,6 @@ export type ApplyPatchCallRenderComponent = Box & {
     previewArgsKey?: string;
     previewPending?: boolean;
     settledError?: boolean;
-    streamingAddFileCache?: ApplyPatchStreamingAddFileHighlightCache;
     streamingAddFileCaches?: Record<string, ApplyPatchStreamingAddFileHighlightCache | undefined>;
 };
 

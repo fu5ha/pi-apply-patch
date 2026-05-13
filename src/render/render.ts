@@ -69,9 +69,15 @@ type StreamingAddFileSection = {
     index: number;
 };
 
-export function extractAddFileSections(patchText: string): StreamingAddFileSection[] {
-    const sections: Array<{ path: string; lines: string[]; index: number }> = [];
-    let active: { path: string; lines: string[]; index: number } | undefined;
+type StreamingAddFileScan = {
+    sections: StreamingAddFileSection[];
+    active: StreamingAddFileSection | undefined;
+};
+
+function scanStreamingAddFileSections(patchText: string): StreamingAddFileScan {
+    type DraftSection = { path: string; lines: string[]; index: number };
+    const sections: DraftSection[] = [];
+    let active: DraftSection | undefined;
     for (const line of patchText.split("\n")) {
         const addFileMatch = line.match(/^\*\*\* Add File:\s*(.*)$/);
         if (addFileMatch) {
@@ -92,36 +98,24 @@ export function extractAddFileSections(patchText: string): StreamingAddFileSecti
         active.lines.push(line.slice(1));
     }
 
-    return sections.map((section) => ({
+    const toSection = (section: DraftSection): StreamingAddFileSection => ({
         path: section.path,
         content: section.lines.join("\n"),
         index: section.index,
-    }));
+    });
+
+    return {
+        sections: sections.map(toSection),
+        active: active ? toSection(active) : undefined,
+    };
+}
+
+export function extractAddFileSections(patchText: string): StreamingAddFileSection[] {
+    return scanStreamingAddFileSections(patchText).sections;
 }
 
 export function extractActiveAddFileSection(patchText: string): StreamingAddFileSection | undefined {
-    let active: StreamingAddFileSection | undefined;
-    let addIndex = 0;
-    for (const line of patchText.split("\n")) {
-        const addFileMatch = line.match(/^\*\*\* Add File:\s*(.*)$/);
-        if (addFileMatch) {
-            active = { path: addFileMatch[1] ?? "", content: "", index: addIndex };
-            addIndex++;
-            continue;
-        }
-        if (line.startsWith("*** ")) {
-            active = undefined;
-            continue;
-        }
-        if (!active || !line.startsWith("+")) {
-            continue;
-        }
-        active = {
-            ...active,
-            content: active.content ? `${active.content}\n${line.slice(1)}` : line.slice(1),
-        };
-    }
-    return active;
+    return scanStreamingAddFileSections(patchText).active;
 }
 
 const STREAMING_ADD_FILE_FULL_HIGHLIGHT_LINES = 50;
@@ -262,11 +256,9 @@ function setAddSectionCache(
 ): void {
     component.streamingAddFileCaches ??= {};
     component.streamingAddFileCaches[addSectionCacheKey(section)] = cache;
-    component.streamingAddFileCache = cache;
 }
 
 function clearAddSectionCaches(component: ApplyPatchCallRenderComponent): void {
-    component.streamingAddFileCache = undefined;
     component.streamingAddFileCaches = undefined;
 }
 
