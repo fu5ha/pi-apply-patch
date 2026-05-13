@@ -196,7 +196,7 @@ describe("render helpers", () => {
         expect(rendered).not.toContain("++literalPlus();");
     });
 
-    it("#given completed add file args #when rendering call before preview resolves #then keeps diff-preview-only call body", () => {
+    it("#given completed add file args #when rendering call before preview resolves #then keeps live body", () => {
         // given
         const tool = createApplyPatchTool();
 
@@ -219,7 +219,7 @@ describe("render helpers", () => {
 
         // then
         expect(rendered).toContain("apply_patch: Patching: src/new.ts");
-        expect(rendered).not.toContain("const value = 1;");
+        expect(rendered).toContain("const value = 1;");
     });
 
     it("#given completed new file preview #when rendering call #then keeps write-style highlighted body", () => {
@@ -266,6 +266,63 @@ describe("render helpers", () => {
         expect(rendered).toContain("const value = 1;");
         expect(rendered).toContain("console.log(value);");
         expect(rendered).not.toContain("+1 const value = 1;");
+    });
+
+    it("#given mixed preview with new add file #when rendering call #then combines write body and diff", () => {
+        // given
+        const component = getApplyPatchCallRenderComponent(undefined, undefined);
+        const args = {
+            input: `*** Begin Patch
+*** Add File: src/new.ts
++const value = 1;
+*** Update File: src/existing.ts
+@@
+-old
++new
+*** End Patch`,
+        };
+        setApplyPatchPreview(
+            component,
+            {
+                files: [
+                    {
+                        filePath: "src/new.ts",
+                        operation: "add",
+                        diff: "+1 const value = 1;",
+                        added: 1,
+                        removed: 0,
+                    },
+                    {
+                        filePath: "src/existing.ts",
+                        operation: "update",
+                        diff: "-1 old\n+1 new",
+                        added: 1,
+                        removed: 1,
+                    },
+                ],
+                added: 2,
+                removed: 1,
+            },
+            undefined,
+        );
+
+        // when
+        const rendered = buildApplyPatchCallComponent(
+            component,
+            args,
+            "/workspace/project",
+            identityTheme as never,
+            false,
+            true,
+        )
+            .render(160)
+            .join("\n");
+
+        // then
+        expect(rendered).toContain("const value = 1;");
+        expect(rendered).not.toContain("+1 const value = 1;");
+        expect(rendered).toContain("old");
+        expect(rendered).toContain("new");
     });
 
     it("#given add file scanner #when later header starts #then no active section is returned", () => {

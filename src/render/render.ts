@@ -66,14 +66,17 @@ function normalizeDisplayText(text: string): string {
 type StreamingAddFileSection = {
     path: string;
     content: string;
+    index: number;
 };
 
-export function extractActiveAddFileSection(patchText: string): StreamingAddFileSection | undefined {
-    let active: { path: string; lines: string[] } | undefined;
+export function extractAddFileSections(patchText: string): StreamingAddFileSection[] {
+    const sections: Array<{ path: string; lines: string[]; index: number }> = [];
+    let active: { path: string; lines: string[]; index: number } | undefined;
     for (const line of patchText.split("\n")) {
         const addFileMatch = line.match(/^\*\*\* Add File:\s*(.*)$/);
         if (addFileMatch) {
-            active = { path: addFileMatch[1] ?? "", lines: [] };
+            active = { path: addFileMatch[1] ?? "", lines: [], index: sections.length };
+            sections.push(active);
             continue;
         }
 
@@ -89,10 +92,36 @@ export function extractActiveAddFileSection(patchText: string): StreamingAddFile
         active.lines.push(line.slice(1));
     }
 
-    if (!active) {
-        return undefined;
+    return sections.map((section) => ({
+        path: section.path,
+        content: section.lines.join("\n"),
+        index: section.index,
+    }));
+}
+
+export function extractActiveAddFileSection(patchText: string): StreamingAddFileSection | undefined {
+    let active: StreamingAddFileSection | undefined;
+    let addIndex = 0;
+    for (const line of patchText.split("\n")) {
+        const addFileMatch = line.match(/^\*\*\* Add File:\s*(.*)$/);
+        if (addFileMatch) {
+            active = { path: addFileMatch[1] ?? "", content: "", index: addIndex };
+            addIndex++;
+            continue;
+        }
+        if (line.startsWith("*** ")) {
+            active = undefined;
+            continue;
+        }
+        if (!active || !line.startsWith("+")) {
+            continue;
+        }
+        active = {
+            ...active,
+            content: active.content ? `${active.content}\n${line.slice(1)}` : line.slice(1),
+        };
     }
-    return { path: active.path, content: active.lines.join("\n") };
+    return active;
 }
 
 const STREAMING_ADD_FILE_FULL_HIGHLIGHT_LINES = 50;
@@ -211,28 +240,153 @@ function formatStreamingAddFileBody(
     return text;
 }
 
-function getCompletedSingleAddFileSection(
-    args: ApplyPatchParams | undefined,
-    preview: ApplyPatchPreviewLike | undefined,
-): StreamingAddFileSection | undefined {
-    if (!args?.input || !preview || "error" in preview) {
+function countRenderableLines(content: string): number {
+    return trimTrailingEmptyLines(normalizeDisplayText(content).split("\n")).length;
+}
+
+function addSectionCacheKey(section: StreamingAddFileSection): string {
+    return `${section.index}:${section.path}`;
+}
+
+function getAddSectionCache(
+    component: ApplyPatchCallRenderComponent,
+    section: StreamingAddFileSection,
+): ApplyPatchStreamingAddFileHighlightCache | undefined {
+    return component.streamingAddFileCaches?.[addSectionCacheKey(section)];
+}
+
+function setAddSectionCache(
+    component: ApplyPatchCallRenderComponent,
+    section: StreamingAddFileSection,
+    cache: ApplyPatchStreamingAddFileHighlightCache | undefined,
+): void {
+    component.streamingAddFileCaches ??= {};
+    component.streamingAddFileCaches[addSectionCacheKey(section)] = cache;
+    component.streamingAddFileCache = cache;
+}
+
+function clearAddSectionCaches(component: ApplyPatchCallRenderComponent): void {
+    component.streamingAddFileCache = undefined;
+    component.streamingAddFileCaches = undefined;
+}
+
+function renderAddFileSection(
+    component: ApplyPatchCallRenderComponent,
+    section: StreamingAddFileSection,
+    cwd: string,
+    theme: ApplyPatchTheme,
+    expanded: boolean,
+    file?: ApplyPatchPreviewFile,
+    headerPrefix = "",
+): string | undefined {
+    const cache = updateStreamingHighlightCacheIncremental(
+        getAddSectionCache(component, section),
+        section.path,
+        section.content,
+    );
+    setAddSectionCache(component, section, cache);
+    const body = formatStreamingAddFileBody(section, cache, theme, expanded);
+    if (!body) {
         return undefined;
     }
-    const file = preview.files[0];
-    if (preview.files.length !== 1 || !file || file.operation !== "add") {
-        return undefined;
+    const previewFile =
+        file ??
+        ({
+            filePath: section.path,
+            operation: "add",
+            diff: "",
+            added: countRenderableLines(section.content),
+            removed: 0,
+        } satisfies ApplyPatchPreviewFile);
+    const summary = `${formatPatchFilePath(previewFile, cwd)} ${formatLineCountSummary(previewFile.added, previewFile.removed)}`;
+    const header = headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `• Add ${summary}`;
+    const indent = headerPrefix.length > 0 ? "    " : "";
+    return `${header}\n${body
+        .split("\n")
+        .map((line) => `${indent}${line}`)
+        .join("\n")}`;
+}
+
+function renderProvisionalAddFileSections(
+    component: ApplyPatchCallRenderComponent,
+    args: ApplyPatchParams | undefined,
+    cwd: string,
+    theme: ApplyPatchTheme,
+    expanded: boolean,
+    argsComplete: boolean,
+): string | undefined {
+    const sections = argsComplete
+        ? getSingleOrMultipleAddFileSections(args)
+        : extractAddFileSections(args?.input ?? "");
+    const rendered = sections
+        .map((section) => renderAddFileSection(component, section, cwd, theme, expanded))
+        .filter((section): section is string => typeof section === "string" && section.length > 0);
+    return rendered.length > 0 ? rendered.join("\n") : undefined;
+}
+
+function renderMixedPatchPreview(
+    component: ApplyPatchCallRenderComponent,
+    args: ApplyPatchParams | undefined,
+    preview: ApplyPatchPreview,
+    cwd: string,
+    theme: ApplyPatchTheme,
+    expanded: boolean,
+): string {
+    const addSectionsByIndex = new Map<number, StreamingAddFileSection>();
+    for (const section of getSingleOrMultipleAddFileSections(args)) {
+        addSectionsByIndex.set(section.index, section);
+    }
+
+    const renderedFiles = preview.files.map((file, index) => {
+        const addSection = addSectionsByIndex.get(index);
+        if (file.operation === "add" && addSection) {
+            return renderAddFileSection(
+                component,
+                addSection,
+                cwd,
+                theme,
+                expanded,
+                file,
+                preview.files.length === 1 ? "" : "  └ ",
+            );
+        }
+        return renderPatchFilePreview(file, cwd, theme, expanded, preview.files.length === 1 ? "" : "  └ ");
+    });
+
+    if (preview.files.length === 1) {
+        return renderedFiles[0] ?? "";
+    }
+
+    const noun = preview.files.length === 1 ? "file" : "files";
+    return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles
+        .filter((file): file is string => typeof file === "string" && file.length > 0)
+        .join("\n")}`;
+}
+
+function getSingleOrMultipleAddFileSections(args: ApplyPatchParams | undefined): StreamingAddFileSection[] {
+    if (!args?.input) {
+        return [];
     }
 
     try {
         const hunks = parsePatch(args.input);
-        const hunk = hunks[0];
-        if (hunks.length !== 1 || !hunk || hunk.type !== "add") {
-            return undefined;
-        }
-        return { path: hunk.filePath, content: hunk.content };
+        return hunks.flatMap((hunk, index) =>
+            hunk.type === "add" ? [{ path: hunk.filePath, content: hunk.content, index }] : [],
+        );
     } catch {
-        return undefined;
+        return [];
     }
+}
+
+function hasCompletedAddFileBody(
+    args: ApplyPatchParams | undefined,
+    preview: ApplyPatchPreviewLike | undefined,
+): boolean {
+    if (!preview || "error" in preview) {
+        return false;
+    }
+    const addIndexes = new Set(getSingleOrMultipleAddFileSections(args).map((section) => section.index));
+    return preview.files.some((file, index) => file.operation === "add" && addIndexes.has(index));
 }
 
 function renderInlineDiff(
@@ -487,9 +641,8 @@ export function buildApplyPatchCallComponent(
     expanded: boolean,
     argsComplete: boolean,
 ): ApplyPatchCallRenderComponent {
-    const completedAddFileSection = getCompletedSingleAddFileSection(args, component.preview);
     component.setBgFn(
-        completedAddFileSection
+        hasCompletedAddFileBody(args, component.preview)
             ? (text: string) => theme.bg("toolPendingBg", text)
             : getApplyPatchHeaderBg(component.preview, component.settledError, theme),
     );
@@ -497,22 +650,9 @@ export function buildApplyPatchCallComponent(
     component.addChild(new Text(formatApplyPatchCall(args, theme), 0, 0));
 
     if (!component.preview) {
-        if (argsComplete) {
-            component.streamingAddFileCache = undefined;
-            return component;
-        }
-        const section = extractActiveAddFileSection(args?.input ?? "");
-        if (!section) {
-            component.streamingAddFileCache = undefined;
-            return component;
-        }
-        component.streamingAddFileCache = updateStreamingHighlightCacheIncremental(
-            component.streamingAddFileCache,
-            section.path,
-            section.content,
-        );
-        const body = formatStreamingAddFileBody(section, component.streamingAddFileCache, theme, expanded);
+        const body = renderProvisionalAddFileSections(component, args, cwd, theme, expanded, argsComplete);
         if (!body) {
+            clearAddSectionCaches(component);
             return component;
         }
         component.addChild(new Spacer(1));
@@ -520,30 +660,10 @@ export function buildApplyPatchCallComponent(
         return component;
     }
 
-    component.streamingAddFileCache = undefined;
-
-    if (completedAddFileSection) {
-        component.streamingAddFileCache = rebuildStreamingHighlightCacheFull(
-            completedAddFileSection.path,
-            completedAddFileSection.content,
-        );
-        const completedBody = formatStreamingAddFileBody(
-            completedAddFileSection,
-            component.streamingAddFileCache,
-            theme,
-            expanded,
-        );
-        if (completedBody) {
-            component.addChild(new Spacer(1));
-            component.addChild(new Text(completedBody, 0, 0));
-            return component;
-        }
-    }
-
     const body =
         "error" in component.preview
             ? theme.fg("error", component.preview.error)
-            : renderPatchPreview(component.preview, cwd, theme, expanded);
+            : renderMixedPatchPreview(component, args, component.preview, cwd, theme, expanded);
     component.addChild(new Spacer(1));
     component.addChild(new Text(body, 0, 0));
     return component;
