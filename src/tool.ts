@@ -187,7 +187,14 @@ export function createApplyPatchTool(): ApplyPatchToolDefinitionWithState {
                 });
             }
 
-            return buildApplyPatchCallComponent(component, normalizedArgs, context.cwd, theme, context.expanded);
+            return buildApplyPatchCallComponent(
+                component,
+                normalizedArgs,
+                context.cwd,
+                theme,
+                context.expanded,
+                context.argsComplete,
+            );
         },
         renderResult(result, _options, theme, context) {
             const callComponent = context.state?.callComponent;
@@ -207,7 +214,14 @@ export function createApplyPatchTool(): ApplyPatchToolDefinitionWithState {
                     changed = true;
                 }
                 if (changed) {
-                    buildApplyPatchCallComponent(callComponent, normalizedArgs, context.cwd, theme, context.expanded);
+                    buildApplyPatchCallComponent(
+                        callComponent,
+                        normalizedArgs,
+                        context.cwd,
+                        theme,
+                        context.expanded,
+                        true,
+                    );
                 }
             }
 

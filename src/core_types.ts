@@ -87,6 +87,15 @@ export type ApplyPatchCallRenderComponent = Box & {
     previewArgsKey?: string;
     previewPending?: boolean;
     settledError?: boolean;
+    streamingAddFileCache?: ApplyPatchStreamingAddFileHighlightCache;
+};
+
+export type ApplyPatchStreamingAddFileHighlightCache = {
+    rawPath: string;
+    lang: string;
+    rawContent: string;
+    normalizedLines: string[];
+    highlightedLines: string[];
 };
 
 export type ApplyPatchToolDefinition = ToolDefinition<typeof APPLY_PATCH_PARAMS, ApplyPatchToolDetails | undefined> & {

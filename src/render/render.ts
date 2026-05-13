@@ -1,5 +1,5 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
-import { keyHint } from "@earendil-works/pi-coding-agent";
+import { getLanguageFromPath, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
 import { Box, Spacer, Text } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import type {
@@ -9,6 +9,7 @@ import type {
     ApplyPatchPreviewFile,
     ApplyPatchPreviewLike,
     ApplyPatchRenderState,
+    ApplyPatchStreamingAddFileHighlightCache,
     ApplyPatchToolDetails,
 } from "../core_types.js";
 import { PATCH_COLLAPSED_DIFF_LINES } from "../patch/constants.js";
@@ -56,6 +57,182 @@ function parseDiffLine(line: string): { prefix: string; lineNum: string; content
 
 function replaceTabs(text: string): string {
     return text.replace(/\t/g, "   ");
+}
+
+function normalizeDisplayText(text: string): string {
+    return text.replace(/\r/g, "");
+}
+
+type StreamingAddFileSection = {
+    path: string;
+    content: string;
+};
+
+export function extractActiveAddFileSection(patchText: string): StreamingAddFileSection | undefined {
+    let active: { path: string; lines: string[] } | undefined;
+    for (const line of patchText.split("\n")) {
+        const addFileMatch = line.match(/^\*\*\* Add File:\s*(.*)$/);
+        if (addFileMatch) {
+            active = { path: addFileMatch[1] ?? "", lines: [] };
+            continue;
+        }
+
+        if (line.startsWith("*** ")) {
+            active = undefined;
+            continue;
+        }
+
+        if (!active || !line.startsWith("+")) {
+            continue;
+        }
+
+        active.lines.push(line.slice(1));
+    }
+
+    if (!active) {
+        return undefined;
+    }
+    return { path: active.path, content: active.lines.join("\n") };
+}
+
+const STREAMING_ADD_FILE_FULL_HIGHLIGHT_LINES = 50;
+
+function highlightStreamingLine(line: string, lang: string): string {
+    try {
+        return highlightCode(line, lang)[0] ?? "";
+    } catch {
+        return line;
+    }
+}
+
+function refreshStreamingHighlightPrefix(cache: ApplyPatchStreamingAddFileHighlightCache): void {
+    const prefixCount = Math.min(STREAMING_ADD_FILE_FULL_HIGHLIGHT_LINES, cache.normalizedLines.length);
+    if (prefixCount === 0) return;
+    const prefixSource = cache.normalizedLines.slice(0, prefixCount).join("\n");
+    let prefixHighlighted: string[];
+    try {
+        prefixHighlighted = highlightCode(prefixSource, cache.lang);
+    } catch {
+        prefixHighlighted = prefixSource.split("\n");
+    }
+    for (let i = 0; i < prefixCount; i++) {
+        cache.highlightedLines[i] =
+            prefixHighlighted[i] ?? highlightStreamingLine(cache.normalizedLines[i] ?? "", cache.lang);
+    }
+}
+
+function rebuildStreamingHighlightCacheFull(
+    rawPath: string,
+    fileContent: string,
+): ApplyPatchStreamingAddFileHighlightCache | undefined {
+    const lang = getLanguageFromPath(rawPath);
+    if (!lang) return undefined;
+    const normalized = replaceTabs(normalizeDisplayText(fileContent));
+    let highlightedLines: string[];
+    try {
+        highlightedLines = highlightCode(normalized, lang);
+    } catch {
+        highlightedLines = normalized.split("\n");
+    }
+    return {
+        rawPath,
+        lang,
+        rawContent: fileContent,
+        normalizedLines: normalized.split("\n"),
+        highlightedLines,
+    };
+}
+
+function updateStreamingHighlightCacheIncremental(
+    cache: ApplyPatchStreamingAddFileHighlightCache | undefined,
+    rawPath: string,
+    fileContent: string,
+): ApplyPatchStreamingAddFileHighlightCache | undefined {
+    const lang = getLanguageFromPath(rawPath);
+    if (!lang) return undefined;
+    if (!cache) return rebuildStreamingHighlightCacheFull(rawPath, fileContent);
+    if (cache.lang !== lang || cache.rawPath !== rawPath)
+        return rebuildStreamingHighlightCacheFull(rawPath, fileContent);
+    if (!fileContent.startsWith(cache.rawContent)) return rebuildStreamingHighlightCacheFull(rawPath, fileContent);
+    if (fileContent.length === cache.rawContent.length) return cache;
+
+    const deltaNormalized = replaceTabs(normalizeDisplayText(fileContent.slice(cache.rawContent.length)));
+    cache.rawContent = fileContent;
+    if (cache.normalizedLines.length === 0) {
+        cache.normalizedLines.push("");
+        cache.highlightedLines.push("");
+    }
+
+    const segments = deltaNormalized.split("\n");
+    const lastIndex = cache.normalizedLines.length - 1;
+    cache.normalizedLines[lastIndex] += segments[0] ?? "";
+    cache.highlightedLines[lastIndex] = highlightStreamingLine(cache.normalizedLines[lastIndex] ?? "", cache.lang);
+    for (let i = 1; i < segments.length; i++) {
+        const segment = segments[i] ?? "";
+        cache.normalizedLines.push(segment);
+        cache.highlightedLines.push(highlightStreamingLine(segment, cache.lang));
+    }
+    refreshStreamingHighlightPrefix(cache);
+    return cache;
+}
+
+function trimTrailingEmptyLines(lines: string[]): string[] {
+    let end = lines.length;
+    while (end > 0 && lines[end - 1] === "") {
+        end--;
+    }
+    return lines.slice(0, end);
+}
+
+function formatStreamingAddFileBody(
+    section: StreamingAddFileSection,
+    cache: ApplyPatchStreamingAddFileHighlightCache | undefined,
+    theme: ApplyPatchTheme,
+    expanded: boolean,
+): string | undefined {
+    if (!section.content) {
+        return undefined;
+    }
+    const lang = getLanguageFromPath(section.path);
+    const renderedLines = lang
+        ? (cache?.highlightedLines ?? replaceTabs(normalizeDisplayText(section.content)).split("\n"))
+        : normalizeDisplayText(section.content)
+              .split("\n")
+              .map((line) => theme.fg("toolOutput", replaceTabs(line)));
+    const lines = trimTrailingEmptyLines(renderedLines);
+    const totalLines = lines.length;
+    const maxLines = expanded ? totalLines : 10;
+    const displayLines = lines.slice(0, maxLines);
+    const remaining = lines.length - maxLines;
+    let text = displayLines.join("\n");
+    if (remaining > 0) {
+        text += `${theme.fg("muted", `\n... (${remaining} more lines, ${totalLines} total,`)} ${formatToolExpandKeyHint()})`;
+    }
+    return text;
+}
+
+function getCompletedSingleAddFileSection(
+    args: ApplyPatchParams | undefined,
+    preview: ApplyPatchPreviewLike | undefined,
+): StreamingAddFileSection | undefined {
+    if (!args?.input || !preview || "error" in preview) {
+        return undefined;
+    }
+    const file = preview.files[0];
+    if (preview.files.length !== 1 || !file || file.operation !== "add") {
+        return undefined;
+    }
+
+    try {
+        const hunks = parsePatch(args.input);
+        const hunk = hunks[0];
+        if (hunks.length !== 1 || !hunk || hunk.type !== "add") {
+            return undefined;
+        }
+        return { path: hunk.filePath, content: hunk.content };
+    } catch {
+        return undefined;
+    }
 }
 
 function renderInlineDiff(
@@ -308,13 +485,59 @@ export function buildApplyPatchCallComponent(
     cwd: string,
     theme: ApplyPatchTheme,
     expanded: boolean,
+    argsComplete: boolean,
 ): ApplyPatchCallRenderComponent {
-    component.setBgFn(getApplyPatchHeaderBg(component.preview, component.settledError, theme));
+    const completedAddFileSection = getCompletedSingleAddFileSection(args, component.preview);
+    component.setBgFn(
+        completedAddFileSection
+            ? (text: string) => theme.bg("toolPendingBg", text)
+            : getApplyPatchHeaderBg(component.preview, component.settledError, theme),
+    );
     component.clear();
     component.addChild(new Text(formatApplyPatchCall(args, theme), 0, 0));
 
     if (!component.preview) {
+        if (argsComplete) {
+            component.streamingAddFileCache = undefined;
+            return component;
+        }
+        const section = extractActiveAddFileSection(args?.input ?? "");
+        if (!section) {
+            component.streamingAddFileCache = undefined;
+            return component;
+        }
+        component.streamingAddFileCache = updateStreamingHighlightCacheIncremental(
+            component.streamingAddFileCache,
+            section.path,
+            section.content,
+        );
+        const body = formatStreamingAddFileBody(section, component.streamingAddFileCache, theme, expanded);
+        if (!body) {
+            return component;
+        }
+        component.addChild(new Spacer(1));
+        component.addChild(new Text(body, 0, 0));
         return component;
+    }
+
+    component.streamingAddFileCache = undefined;
+
+    if (completedAddFileSection) {
+        component.streamingAddFileCache = rebuildStreamingHighlightCacheFull(
+            completedAddFileSection.path,
+            completedAddFileSection.content,
+        );
+        const completedBody = formatStreamingAddFileBody(
+            completedAddFileSection,
+            component.streamingAddFileCache,
+            theme,
+            expanded,
+        );
+        if (completedBody) {
+            component.addChild(new Spacer(1));
+            component.addChild(new Text(completedBody, 0, 0));
+            return component;
+        }
     }
 
     const body =

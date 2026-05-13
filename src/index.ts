@@ -51,4 +51,3 @@ function syncToolset(
 
     pi.setActiveTools(replaceApplyPatchWithEditTools(currentToolNames));
 }
-

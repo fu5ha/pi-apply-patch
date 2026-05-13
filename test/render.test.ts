@@ -3,7 +3,14 @@ import { PATCH_PREVIEW_MAX_CHARS, PATCH_PREVIEW_MAX_LINES } from "../src/patch/c
 import { displayPath } from "../src/preview/paths.js";
 import { formatPatchPreview } from "../src/preview/preview.js";
 import { truncatePreview } from "../src/preview/truncate.js";
-import { clearApplyPatchRenderState, formatInFlightCallText } from "../src/render/render.js";
+import {
+    buildApplyPatchCallComponent,
+    clearApplyPatchRenderState,
+    extractActiveAddFileSection,
+    formatInFlightCallText,
+    getApplyPatchCallRenderComponent,
+    setApplyPatchPreview,
+} from "../src/render/render.js";
 import { createApplyPatchTool } from "../src/tool.js";
 
 const identityTheme = {
@@ -160,6 +167,119 @@ describe("render helpers", () => {
 
         // then
         expect(rendered).toContain("apply_patch: Patching");
+    });
+
+    it("#given streaming add file args #when rendering call #then shows file body without patch prefixes", () => {
+        // given
+        const tool = createApplyPatchTool();
+
+        // when
+        const component = tool.renderCall?.(
+            {
+                input: `*** Begin Patch
+*** Add File: src/new.ts
++const value = 1;
+++literalPlus();`,
+            },
+            identityTheme as never,
+            {
+                argsComplete: false,
+                cwd: "/workspace/project",
+                toolCallId: "call-add-stream",
+            } as never,
+        );
+        const rendered = component?.render(120).join("\n") ?? "";
+
+        // then
+        expect(rendered).toContain("const value = 1;");
+        expect(rendered).toContain("+literalPlus();");
+        expect(rendered).not.toContain("++literalPlus();");
+    });
+
+    it("#given completed add file args #when rendering call before preview resolves #then keeps diff-preview-only call body", () => {
+        // given
+        const tool = createApplyPatchTool();
+
+        // when
+        const component = tool.renderCall?.(
+            {
+                input: `*** Begin Patch
+*** Add File: src/new.ts
++const value = 1;
+*** End Patch`,
+            },
+            identityTheme as never,
+            {
+                argsComplete: true,
+                cwd: "/workspace/project",
+                toolCallId: "call-add-complete",
+            } as never,
+        );
+        const rendered = component?.render(120).join("\n") ?? "";
+
+        // then
+        expect(rendered).toContain("apply_patch: Patching: src/new.ts");
+        expect(rendered).not.toContain("const value = 1;");
+    });
+
+    it("#given completed new file preview #when rendering call #then keeps write-style highlighted body", () => {
+        // given
+        const component = getApplyPatchCallRenderComponent(undefined, undefined);
+        const args = {
+            input: `*** Begin Patch
+*** Add File: src/new.ts
++const value = 1;
++console.log(value);
+*** End Patch`,
+        };
+        setApplyPatchPreview(
+            component,
+            {
+                files: [
+                    {
+                        filePath: "src/new.ts",
+                        operation: "add",
+                        diff: "+1 const value = 1;\n+2 console.log(value);",
+                        added: 2,
+                        removed: 0,
+                    },
+                ],
+                added: 2,
+                removed: 0,
+            },
+            undefined,
+        );
+
+        // when
+        const rendered = buildApplyPatchCallComponent(
+            component,
+            args,
+            "/workspace/project",
+            identityTheme as never,
+            false,
+            true,
+        )
+            .render(120)
+            .join("\n");
+
+        // then
+        expect(rendered).toContain("const value = 1;");
+        expect(rendered).toContain("console.log(value);");
+        expect(rendered).not.toContain("+1 const value = 1;");
+    });
+
+    it("#given add file scanner #when later header starts #then no active section is returned", () => {
+        // given
+        const patch = `*** Begin Patch
+*** Add File: src/new.ts
++hello
+*** Update File: src/old.ts`;
+
+        // when
+        const section = extractActiveAddFileSection(patch);
+
+        // then
+        expect(section).toBeUndefined();
     });
 
     it("#given patch args #when rendering call #then shows paths and count", () => {
