@@ -1,15 +1,15 @@
 import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import path from "node:path";
-import type { AgentToolResult } from "@mariozechner/pi-agent-core";
-import type { Model } from "@mariozechner/pi-ai";
+import type { AgentToolResult } from "@earendil-works/pi-agent-core";
+import type { Model } from "@earendil-works/pi-ai";
 import {
 	defineTool,
 	type ExtensionAPI,
 	getLanguageFromPath,
 	highlightCode,
 	type ToolDefinition,
-} from "@mariozechner/pi-coding-agent";
-import { Box, Container, Spacer, Text } from "@mariozechner/pi-tui";
+} from "@earendil-works/pi-coding-agent";
+import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import { Type } from "typebox";
 
@@ -416,9 +416,13 @@ function formatLineCountSummary(added: number, removed: number): string {
 	return `(+${added} -${removed})`;
 }
 
+function normalizeDisplayPath(filePath: string): string {
+	return filePath.replaceAll(path.sep, "/");
+}
+
 export function displayPath(filePath: string, cwd: string): string {
 	if (!path.isAbsolute(filePath)) {
-		return filePath;
+		return normalizeDisplayPath(filePath);
 	}
 
 	const absoluteCwd = path.resolve(cwd);
@@ -427,10 +431,10 @@ export function displayPath(filePath: string, cwd: string): string {
 		relativePath === "" ||
 		(!relativePath.startsWith(`..${path.sep}`) && relativePath !== ".." && !path.isAbsolute(relativePath))
 	) {
-		return relativePath || ".";
+		return normalizeDisplayPath(relativePath || ".");
 	}
 
-	return filePath;
+	return normalizeDisplayPath(filePath);
 }
 
 export function formatPatchFilePath(file: ApplyPatchPreviewFile, cwd: string = process.cwd()): string {
