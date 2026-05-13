@@ -2,7 +2,7 @@ import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/pr
 import path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import { defineTool, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, keyHint, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import { Type } from "typebox";
@@ -201,6 +201,7 @@ export const PATCH_PREVIEW_MAX_LINES = 16;
 export const PATCH_PREVIEW_MAX_CHARS = 4000;
 const PATCH_PREVIEW_HEAD_LINES = 8;
 const PATCH_PREVIEW_TAIL_LINES = 8;
+const PATCH_COLLAPSED_DIFF_LINES = 10;
 
 type ApplyPatchPreviewLike = ApplyPatchPreview | { error: string };
 
@@ -705,63 +706,72 @@ function renderDiff(diffText: string, theme: ApplyPatchTheme): string {
 	return rendered.join("\n");
 }
 
+function getPreviewDiffLines(diffText: string, expanded: boolean): { lines: string[]; remaining: number } {
+	const lines = diffText.split("\n");
+	if (expanded || lines.length <= PATCH_COLLAPSED_DIFF_LINES) {
+		return { lines, remaining: 0 };
+	}
+
+	return {
+		lines: lines.slice(0, PATCH_COLLAPSED_DIFF_LINES),
+		remaining: lines.length - PATCH_COLLAPSED_DIFF_LINES,
+	};
+}
+
+function formatToolExpandKeyHint(): string {
+	try {
+		return keyHint("app.tools.expand", "to expand");
+	} catch {
+		return "expand to expand";
+	}
+}
+
+function formatExpandNote(remaining: number, theme: ApplyPatchTheme): string {
+	return `${theme.fg("muted", `... (${remaining} more lines,`)} ${formatToolExpandKeyHint()})`;
+}
+
+function renderPatchFilePreview(
+	file: ApplyPatchPreviewFile,
+	cwd: string,
+	theme: ApplyPatchTheme,
+	expanded: boolean,
+	headerPrefix: string,
+): string {
+	const summary = `${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
+	const header =
+		headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `• ${formatPatchOperation(file.operation)} ${summary}`;
+	if (!file.diff) {
+		return header;
+	}
+
+	const { lines, remaining } = getPreviewDiffLines(file.diff, expanded);
+	const renderedLines = renderDiff(lines.join("\n"), theme).split("\n");
+	if (remaining > 0) {
+		renderedLines.push(formatExpandNote(remaining, theme));
+	}
+	const indent = headerPrefix.length > 0 ? "    " : "";
+	return `${header}\n${renderedLines.map((line) => `${indent}${line}`).join("\n")}`;
+}
+
 function renderPatchPreview(
 	preview: ApplyPatchPreview,
 	cwd: string,
 	theme: ApplyPatchTheme,
 	expanded: boolean,
 ): string {
-	if (expanded) {
-		const renderFile = (file: ApplyPatchPreviewFile, headerPrefix: string): string => {
-			const header = `• ${formatPatchOperation(file.operation)} ${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
-			if (!file.diff) {
-				return headerPrefix.length > 0
-					? `${headerPrefix}${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`
-					: header;
-			}
-			const previewDiff = truncatePreview(file.diff);
-			const renderedDiff = renderDiff(previewDiff, theme);
-			if (headerPrefix.length > 0) {
-				const nestedHeader = `${headerPrefix}${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
-				return `${nestedHeader}\n${renderedDiff
-					.split("\n")
-					.map((line) => `    ${line}`)
-					.join("\n")}`;
-			}
-			return `${header}\n${renderedDiff}`;
-		};
-
-		if (preview.files.length === 1) {
-			const file = preview.files[0];
-			return file ? renderFile(file, "") : "";
-		}
-
-		const noun = preview.files.length === 1 ? "file" : "files";
-		const renderedFiles = preview.files.map((file) => renderFile(file, "  └ ")).join("\n");
-		if (renderedFiles.length > 0) {
-			return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
-		}
+	if (preview.files.length === 1) {
+		const file = preview.files[0];
+		return file ? renderPatchFilePreview(file, cwd, theme, expanded, "") : "";
 	}
 
-	return formatPatchPreview(preview, cwd, expanded)
-		.split("\n")
-		.map((line) => {
-			const trimmed = line.trimStart();
-			if (trimmed.startsWith("+")) {
-				return theme.fg("toolDiffAdded", line);
-			}
-			if (trimmed.startsWith("-")) {
-				return theme.fg("toolDiffRemoved", line);
-			}
-			if (trimmed.startsWith("•")) {
-				return theme.fg("toolTitle", theme.bold(line));
-			}
-			if (trimmed.startsWith("└")) {
-				return theme.fg("accent", line);
-			}
-			return theme.fg("toolDiffContext", line);
-		})
+	const noun = preview.files.length === 1 ? "file" : "files";
+	const renderedFiles = preview.files
+		.map((file) => renderPatchFilePreview(file, cwd, theme, expanded, "  └ "))
 		.join("\n");
+	if (renderedFiles.length === 0) {
+		return "";
+	}
+	return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
 }
 
 function createApplyPatchCallRenderComponent(): ApplyPatchCallRenderComponent {
@@ -823,6 +833,7 @@ function buildApplyPatchCallComponent(
 	args: ApplyPatchParams | undefined,
 	cwd: string,
 	theme: ApplyPatchTheme,
+	expanded: boolean,
 ): ApplyPatchCallRenderComponent {
 	component.setBgFn(getApplyPatchHeaderBg(component.preview, component.settledError, theme));
 	component.clear();
@@ -835,7 +846,7 @@ function buildApplyPatchCallComponent(
 	const body =
 		"error" in component.preview
 			? theme.fg("error", component.preview.error)
-			: renderPatchPreview(component.preview, cwd, theme, true);
+			: renderPatchPreview(component.preview, cwd, theme, expanded);
 	component.addChild(new Spacer(1));
 	component.addChild(new Text(body, 0, 0));
 	return component;
@@ -880,6 +891,7 @@ function formatApplyPatchResult(
 	theme: ApplyPatchTheme,
 	cwd: string,
 	isError: boolean,
+	expanded: boolean,
 ): string | undefined {
 	if (isError) {
 		const errorText = result.content
@@ -896,7 +908,7 @@ function formatApplyPatchResult(
 
 	const resultPreview = result.details?.preview;
 	if (resultPreview && (!preview || "error" in preview || JSON.stringify(resultPreview) !== JSON.stringify(preview))) {
-		return renderPatchPreview(resultPreview, cwd, theme, true);
+		return renderPatchPreview(resultPreview, cwd, theme, expanded);
 	}
 
 	return undefined;
@@ -1457,7 +1469,7 @@ export function createApplyPatchTool(): ApplyPatchToolDefinitionWithState {
 				});
 			}
 
-			return buildApplyPatchCallComponent(component, normalizedArgs, context.cwd, theme);
+			return buildApplyPatchCallComponent(component, normalizedArgs, context.cwd, theme, context.expanded);
 		},
 		renderResult(result, _options, theme, context) {
 			const callComponent = context.state?.callComponent;
@@ -1477,11 +1489,18 @@ export function createApplyPatchTool(): ApplyPatchToolDefinitionWithState {
 					changed = true;
 				}
 				if (changed) {
-					buildApplyPatchCallComponent(callComponent, normalizedArgs, context.cwd, theme);
+					buildApplyPatchCallComponent(callComponent, normalizedArgs, context.cwd, theme, context.expanded);
 				}
 			}
 
-			const output = formatApplyPatchResult(callComponent?.preview, result, theme, context.cwd, context.isError);
+			const output = formatApplyPatchResult(
+				callComponent?.preview,
+				result,
+				theme,
+				context.cwd,
+				context.isError,
+				_options.expanded,
+			);
 			const component = (context.lastComponent as Container | undefined) ?? new Container();
 			component.clear();
 			if (!output) {

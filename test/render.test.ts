@@ -336,7 +336,88 @@ describe("render helpers", () => {
 		expect(rendered).toContain("+1 one");
 	});
 
-	it("#given large preview #when rendering result expanded #then shows truncation marker", () => {
+	it("#given large multi-file preview #when rendering result collapsed #then compresses each file independently", () => {
+		// given
+		const tool = createApplyPatchTool();
+		const result = {
+			content: [{ type: "text" as const, text: "Applying patch" }],
+			details: {
+				preview: {
+					files: [
+						{
+							filePath: "src/a.ts",
+							operation: "update" as const,
+							diff: Array.from({ length: 12 }, (_, index) => `+${index + 1} a`).join("\n"),
+							added: 12,
+							removed: 0,
+						},
+						{
+							filePath: "src/b.ts",
+							operation: "update" as const,
+							diff: Array.from({ length: 15 }, (_, index) => `+${index + 1} b`).join("\n"),
+							added: 15,
+							removed: 0,
+						},
+					],
+					added: 27,
+					removed: 0,
+				},
+			},
+		};
+
+		// when
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			identityTheme as never,
+			{ cwd: "/workspace/project", toolCallId: "result-large-multi", args: { input: "" } } as never,
+		);
+		const rendered = component?.render(400).join("\n") ?? "";
+
+		// then
+		expect(rendered).toContain("└ src/a.ts (+12 -0)");
+		expect(rendered).toContain("└ src/b.ts (+15 -0)");
+		expect(rendered).toContain("+10 a");
+		expect(rendered).not.toContain("+11 a");
+		expect(rendered).toContain("... (2 more lines,");
+		expect(rendered).toContain("+10 b");
+		expect(rendered).not.toContain("+11 b");
+		expect(rendered).toContain("... (5 more lines,");
+	});
+
+	it("#given large preview #when rendering result collapsed #then shows per-file expand note", () => {
+		// given
+		const tool = createApplyPatchTool();
+		const diff = Array.from({ length: 50 }, (_, index) => `+${index + 1} line`).join("\n");
+		const result = {
+			content: [{ type: "text" as const, text: "Applying patch" }],
+			details: {
+				preview: {
+					files: [{ filePath: "src/large.ts", operation: "update" as const, diff, added: 50, removed: 0 }],
+					added: 50,
+					removed: 0,
+				},
+			},
+		};
+
+		// when
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			identityTheme as never,
+			{ cwd: "/workspace/project", toolCallId: "result-large", args: { input: "" } } as never,
+		);
+		const rendered = component?.render(400).join("\n") ?? "";
+
+		// then
+		expect(rendered).toContain("• Edited src/large.ts (+50 -0)");
+		expect(rendered).toContain("+10 line");
+		expect(rendered).not.toContain("+11 line");
+		expect(rendered).toContain("... (40 more lines,");
+		expect(rendered).toContain("to expand");
+	});
+
+	it("#given large preview #when rendering result expanded #then shows all lines", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const diff = Array.from({ length: 50 }, (_, index) => `+${index + 1} line`).join("\n");
@@ -356,12 +437,13 @@ describe("render helpers", () => {
 			result,
 			{ expanded: true, isPartial: false },
 			identityTheme as never,
-			{ cwd: "/workspace/project", toolCallId: "result-large", args: { input: "" } } as never,
+			{ cwd: "/workspace/project", toolCallId: "result-large-expanded", args: { input: "" } } as never,
 		);
 		const rendered = component?.render(400).join("\n") ?? "";
 
 		// then
 		expect(rendered).toContain("• Edited src/large.ts (+50 -0)");
-		expect(rendered).toContain("…");
+		expect(rendered).toContain("+50 line");
+		expect(rendered).not.toContain("more lines");
 	});
 });
