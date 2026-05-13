@@ -83,6 +83,8 @@ export type ApplyPatchRenderState = {
 export type ApplyPatchPreviewLike = ApplyPatchPreview | { error: string };
 
 export type ApplyPatchCallRenderComponent = Box & {
+    headerComponent?: Box;
+    bodyComponent?: Box;
     preview?: ApplyPatchPreviewLike;
     previewArgsKey?: string;
     previewPending?: boolean;

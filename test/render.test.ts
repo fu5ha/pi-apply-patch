@@ -166,7 +166,7 @@ describe("render helpers", () => {
         const rendered = component?.render(120).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("apply_patch: Patching");
+        expect(rendered).toContain("apply_patch");
     });
 
     it("#given streaming add file args #when rendering call #then shows file body without patch prefixes", () => {
@@ -218,7 +218,7 @@ describe("render helpers", () => {
         const rendered = component?.render(120).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("apply_patch: Patching: src/new.ts");
+        expect(rendered).toContain("apply_patch (src/new.ts)");
         expect(rendered).toContain("const value = 1;");
     });
 
@@ -266,6 +266,56 @@ describe("render helpers", () => {
         expect(rendered).toContain("const value = 1;");
         expect(rendered).toContain("console.log(value);");
         expect(rendered).not.toContain("+1 const value = 1;");
+    });
+
+    it("#given successful completed diff preview #when rendering call #then header is success and body stays pending", () => {
+        // given
+        const component = getApplyPatchCallRenderComponent(undefined, undefined);
+        const args = {
+            input: `*** Begin Patch
+*** Update File: src/existing.ts
+@@
+-old
++new
+*** End Patch`,
+        };
+        setApplyPatchPreview(
+            component,
+            {
+                files: [
+                    {
+                        filePath: "src/existing.ts",
+                        operation: "update",
+                        diff: "-1 old\n+1 new",
+                        added: 1,
+                        removed: 1,
+                    },
+                ],
+                added: 1,
+                removed: 1,
+            },
+            undefined,
+        );
+
+        // when
+        const rendered = buildApplyPatchCallComponent(
+            component,
+            args,
+            "/workspace/project",
+            markerTheme as never,
+            false,
+            true,
+        )
+            .render(120)
+            .join("\n");
+
+        // then
+        expect(rendered).toContain("<bg:toolSuccessBg>");
+        expect(rendered).toContain("apply_patch</bold></fg:toolTitle> (<fg:accent>src/existing.ts</fg:accent>)");
+        expect(rendered).toContain("<bg:toolPendingBg>");
+        expect(rendered).toContain("◆ <fg:toolTitle>edit</fg:toolTitle> <fg:accent>src/existing.ts</fg:accent>");
+        expect(rendered).toContain("<fg:toolDiffAdded>+1</fg:toolDiffAdded>");
+        expect(rendered).toContain("<fg:toolDiffRemoved>-1</fg:toolDiffRemoved>");
     });
 
     it("#given mixed preview with new add file #when rendering call #then combines write body and diff", () => {
@@ -320,8 +370,8 @@ describe("render helpers", () => {
 
         // then
         expect(rendered).not.toContain("Edited 2 files");
-        expect(rendered).toContain("◆ Add src/new.ts");
-        expect(rendered).toContain("◆ Edited src/existing.ts");
+        expect(rendered).toContain("◆ add src/new.ts");
+        expect(rendered).toContain("◆ edit src/existing.ts");
         expect(rendered).toContain("const value = 1;");
         expect(rendered).not.toContain("+1 const value = 1;");
         expect(rendered).toContain("old");
@@ -365,7 +415,7 @@ describe("render helpers", () => {
         const rendered = component?.render(200).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("apply_patch: Patching (2 files): src/a.ts, src/b.ts");
+        expect(rendered).toContain("apply_patch (src/a.ts, src/b.ts)");
     });
 
     it("#given preview without call component #when rendering result collapsed #then renders fallback diff", () => {
@@ -404,7 +454,7 @@ describe("render helpers", () => {
         const rendered = component?.render(200).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("◆ Edited src/foo.ts (+1 -1)");
+        expect(rendered).toContain("◆ edit src/foo.ts (+1 -1)");
         expect(rendered).toContain("+1 new");
     });
 
@@ -486,7 +536,9 @@ describe("render helpers", () => {
         const rendered = component?.render(200).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("◆ Edited src/foo.ts (+1 -1)");
+        expect(rendered).toContain("◆ <fg:toolTitle>edit</fg:toolTitle> <fg:accent>src/foo.ts</fg:accent>");
+        expect(rendered).toContain("<fg:toolDiffAdded>+1</fg:toolDiffAdded>");
+        expect(rendered).toContain("<fg:toolDiffRemoved>-1</fg:toolDiffRemoved>");
         expect(rendered).toContain("<fg:toolDiffRemoved>-1 alpha <inverse>old</inverse></fg:toolDiffRemoved>");
         expect(rendered).toContain("<fg:toolDiffAdded>+1 alpha <inverse>new</inverse></fg:toolDiffAdded>");
     });
@@ -534,7 +586,7 @@ describe("render helpers", () => {
         const rendered = component?.render(400).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("◆ Edited 2 files (+2 -0)");
+        expect(rendered).toContain("◆ edit 2 files (+2 -0)");
         expect(rendered).toContain("└ src/a.ts (+1 -0)");
         expect(rendered).toContain("└ src/b.ts (+1 -0)");
         expect(rendered).toContain("+1 one");
@@ -630,7 +682,7 @@ describe("render helpers", () => {
         const rendered = component?.render(400).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("◆ Edited src/large.ts (+50 -0)");
+        expect(rendered).toContain("◆ edit src/large.ts (+50 -0)");
         expect(rendered).toContain("+10 line");
         expect(rendered).not.toContain("+11 line");
         expect(rendered).toContain("... (40 more lines,");
@@ -674,7 +726,7 @@ describe("render helpers", () => {
         const rendered = component?.render(400).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("◆ Edited src/large.ts (+50 -0)");
+        expect(rendered).toContain("◆ edit src/large.ts (+50 -0)");
         expect(rendered).toContain("+50 line");
         expect(rendered).not.toContain("more lines");
     });

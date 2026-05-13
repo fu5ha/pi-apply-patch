@@ -266,7 +266,7 @@ describe("pi-apply-patch", () => {
             { lastComponent: undefined } as never,
         );
         const rendered = component?.render(120).join("\n") ?? "";
-        expect(rendered).toContain("◆ Edited 2 files (+2 -1)");
+        expect(rendered).toContain("◆ edit 2 files (+2 -1)");
         expect(rendered).toContain("sample.txt (+1 -1)");
         expect(rendered).toContain("+1 after");
         expect(rendered).not.toContain("Index:");
@@ -304,7 +304,7 @@ describe("pi-apply-patch", () => {
 
         // then
         expect(result.details?.preview).toBeDefined();
-        expect(rendered).toContain("◆ Edited sample.txt (+1 -1)");
+        expect(rendered).toContain("◆ edit sample.txt (+1 -1)");
         expect(rendered).toContain("-1 before");
         expect(rendered).toContain("+1 after");
     });

@@ -1,6 +1,6 @@
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import { getLanguageFromPath, highlightCode, keyHint } from "@earendil-works/pi-coding-agent";
-import { Box, Spacer, Text } from "@earendil-works/pi-tui";
+import { Box, Text } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import type {
     ApplyPatchCallRenderComponent,
@@ -14,7 +14,7 @@ import type {
 } from "../core_types.js";
 import { PATCH_COLLAPSED_DIFF_LINES } from "../patch/constants.js";
 import { extractPatchedPaths, parsePatch } from "../patch/parse.js";
-import { formatLineCountSummary, formatPatchFilePath, formatPatchOperation } from "../preview/paths.js";
+import { formatLineCountSummary, formatPatchFilePath } from "../preview/paths.js";
 import { createPatchPreview } from "../preview/preview.js";
 import type { ApplyPatchTheme } from "./theme.js";
 
@@ -298,8 +298,9 @@ function renderAddFileSection(
             added: countRenderableLines(section.content),
             removed: 0,
         } satisfies ApplyPatchPreviewFile);
-    const summary = `${formatPatchFilePath(previewFile, cwd)} ${formatLineCountSummary(previewFile.added, previewFile.removed)}`;
-    const header = headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `◆ Add ${summary}`;
+    const summary = `${formatColoredPatchFilePath(previewFile, cwd, theme)} ${formatColoredLineCountSummary(previewFile.added, previewFile.removed, theme)}`;
+    const header =
+        headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `◆ ${theme.fg("toolDiffAdded", "add")} ${summary}`;
     const indent = headerPrefix.length > 0 ? "    " : "";
     return `${header}\n${body
         .split("\n")
@@ -513,6 +514,24 @@ function formatExpandNote(remaining: number, theme: ApplyPatchTheme): string {
     return `${theme.fg("muted", `... (${remaining} more lines,`)} ${formatToolExpandKeyHint()})`;
 }
 
+function formatColoredLineCountSummary(added: number, removed: number, theme: ApplyPatchTheme): string {
+    return `(${theme.fg("toolDiffAdded", `+${added}`)} ${theme.fg("toolDiffRemoved", `-${removed}`)})`;
+}
+
+function formatColoredPatchOperation(operation: ApplyPatchPreviewFile["operation"], theme: ApplyPatchTheme): string {
+    if (operation === "add") {
+        return theme.fg("toolDiffAdded", "add");
+    }
+    if (operation === "delete") {
+        return theme.fg("toolDiffRemoved", "delete");
+    }
+    return theme.fg("toolTitle", "edit");
+}
+
+function formatColoredPatchFilePath(file: ApplyPatchPreviewFile, cwd: string, theme: ApplyPatchTheme): string {
+    return theme.fg("accent", formatPatchFilePath(file, cwd));
+}
+
 function renderPatchFilePreview(
     file: ApplyPatchPreviewFile,
     cwd: string,
@@ -520,9 +539,11 @@ function renderPatchFilePreview(
     expanded: boolean,
     headerPrefix: string,
 ): string {
-    const summary = `${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
+    const summary = `${formatColoredPatchFilePath(file, cwd, theme)} ${formatColoredLineCountSummary(file.added, file.removed, theme)}`;
     const header =
-        headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `◆ ${formatPatchOperation(file.operation)} ${summary}`;
+        headerPrefix.length > 0
+            ? `${headerPrefix}${summary}`
+            : `◆ ${formatColoredPatchOperation(file.operation, theme)} ${summary}`;
     if (!file.diff) {
         return header;
     }
@@ -554,11 +575,13 @@ function renderPatchPreview(
     if (renderedFiles.length === 0) {
         return "";
     }
-    return `◆ Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
+    return `◆ edit ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
 }
 
 function createApplyPatchCallRenderComponent(): ApplyPatchCallRenderComponent {
-    return Object.assign(new Box(1, 1, (text: string) => text), {
+    return Object.assign(new Box(0, 0), {
+        headerComponent: undefined as Box | undefined,
+        bodyComponent: undefined as Box | undefined,
         preview: undefined as ApplyPatchPreviewLike | undefined,
         previewArgsKey: undefined as string | undefined,
         previewPending: false,
@@ -596,7 +619,7 @@ function getApplyPatchHeaderBg(
         if ("error" in preview) {
             return (text: string) => theme.bg("toolErrorBg", text);
         }
-        return (text: string) => theme.bg("toolPendingBg", text);
+        return (text: string) => theme.bg("toolSuccessBg", text);
     }
     if (settledError) {
         return (text: string) => theme.bg("toolErrorBg", text);
@@ -604,11 +627,25 @@ function getApplyPatchHeaderBg(
     return (text: string) => theme.bg("toolPendingBg", text);
 }
 
+function getApplyPatchBodyBg(
+    preview: ApplyPatchPreviewLike | undefined,
+    settledError: boolean | undefined,
+    theme: ApplyPatchTheme,
+): (text: string) => string {
+    if ((preview && "error" in preview) || settledError) {
+        return (text: string) => theme.bg("toolErrorBg", text);
+    }
+    return (text: string) => theme.bg("toolPendingBg", text);
+}
+
 function formatApplyPatchCall(args: ApplyPatchParams | undefined, theme: ApplyPatchTheme): string {
     const patchText = args?.input ?? "";
-    const callText = formatInFlightCallText(patchText);
-    const text = callText.length > 0 ? `apply_patch: ${callText}` : "apply_patch";
-    return theme.fg("toolTitle", theme.bold(text));
+    const paths = extractPatchedPaths(patchText);
+    const title = theme.fg("toolTitle", theme.bold("apply_patch"));
+    if (paths.length === 0) {
+        return title;
+    }
+    return `${title} (${paths.map((filePath) => theme.fg("accent", filePath)).join(", ")})`;
 }
 
 export function buildApplyPatchCallComponent(
@@ -619,9 +656,24 @@ export function buildApplyPatchCallComponent(
     expanded: boolean,
     argsComplete: boolean,
 ): ApplyPatchCallRenderComponent {
-    component.setBgFn(getApplyPatchHeaderBg(component.preview, component.settledError, theme));
     component.clear();
-    component.addChild(new Text(formatApplyPatchCall(args, theme), 0, 0));
+    component.setBgFn(undefined);
+
+    const headerComponent = component.headerComponent ?? new Box(1, 1);
+    component.headerComponent = headerComponent;
+    headerComponent.setBgFn(getApplyPatchHeaderBg(component.preview, component.settledError, theme));
+    headerComponent.clear();
+    headerComponent.addChild(new Text(formatApplyPatchCall(args, theme), 0, 0));
+    component.addChild(headerComponent);
+
+    const addBody = (body: string): void => {
+        const bodyComponent = component.bodyComponent ?? new Box(1, 1);
+        component.bodyComponent = bodyComponent;
+        bodyComponent.setBgFn(getApplyPatchBodyBg(component.preview, component.settledError, theme));
+        bodyComponent.clear();
+        bodyComponent.addChild(new Text(body, 0, 0));
+        component.addChild(bodyComponent);
+    };
 
     if (!component.preview) {
         const body = renderProvisionalAddFileSections(component, args, cwd, theme, expanded, argsComplete);
@@ -629,8 +681,7 @@ export function buildApplyPatchCallComponent(
             clearAddSectionCaches(component);
             return component;
         }
-        component.addChild(new Spacer(1));
-        component.addChild(new Text(body, 0, 0));
+        addBody(body);
         return component;
     }
 
@@ -638,8 +689,7 @@ export function buildApplyPatchCallComponent(
         "error" in component.preview
             ? theme.fg("error", component.preview.error)
             : renderMixedPatchPreview(component, args, component.preview, cwd, theme, expanded);
-    component.addChild(new Spacer(1));
-    component.addChild(new Text(body, 0, 0));
+    addBody(body);
     return component;
 }
 
