@@ -266,6 +266,43 @@ describe("pi-apply-patch", () => {
 		expect(rendered).not.toContain("Index:");
 	});
 
+	it("#given completed apply_patch tool #when rendered after reload #then persisted details show diff", async () => {
+		// given
+		const directory = await createTempDirectory();
+		await writeFile(path.join(directory, "sample.txt"), "before\n", "utf-8");
+		const patch = `*** Begin Patch
+*** Update File: sample.txt
+@@
+-before
++after
+*** End Patch`;
+		const tool = createApplyPatchTool();
+
+		// when
+		const result = await tool.execute("apply-patch-reload-test", { input: patch }, undefined, undefined, {
+			cwd: directory,
+		} as never);
+		const component = tool.renderResult?.(
+			result,
+			{ expanded: false, isPartial: false },
+			identityTheme as never,
+			{
+				args: { input: patch },
+				cwd: directory,
+				lastComponent: undefined,
+				state: {},
+				isError: false,
+			} as never,
+		);
+		const rendered = component?.render(120).join("\n") ?? "";
+
+		// then
+		expect(result.details?.preview).toBeDefined();
+		expect(rendered).toContain("• Edited sample.txt (+1 -1)");
+		expect(rendered).toContain("-1 before");
+		expect(rendered).toContain("+1 after");
+	});
+
 	it("#given multi file apply_patch tool execution #when applying #then emits realtime progress updates", async () => {
 		// given
 		const directory = await createTempDirectory();
