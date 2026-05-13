@@ -260,7 +260,6 @@ describe("pi-apply-patch", () => {
 			{ lastComponent: undefined } as never,
 		);
 		const rendered = component?.render(120).join("\n") ?? "";
-		expect(rendered).toContain("Applying patch");
 		expect(rendered).toContain("• Edited 2 files (+2 -1)");
 		expect(rendered).toContain("sample.txt (+1 -1)");
 		expect(rendered).toContain("+1 after");
@@ -305,6 +304,38 @@ describe("pi-apply-patch", () => {
 		expect(updates[2]?.content.find((block) => block.type === "text")?.text).toContain("Applying patch (2/2)...");
 		expect(await readFile(path.join(directory, "first.txt"), "utf-8")).toBe("ONE\n");
 		expect(await readFile(path.join(directory, "second.txt"), "utf-8")).toBe("TWO\n");
+	});
+
+	it("#given patch in large file #when previewed #then diff context matches edit tool", async () => {
+		// given
+		const directory = await createTempDirectory();
+		const original = `${Array.from({ length: 30 }, (_, index) => `line ${index + 1}`).join("\n")}\n`;
+		await writeFile(path.join(directory, "large.txt"), original, "utf-8");
+		const patch = `*** Begin Patch
+*** Update File: large.txt
+@@
+-line 15
++changed 15
+*** End Patch`;
+		const tool = createApplyPatchTool();
+		const updates: ApplyPatchUpdate[] = [];
+
+		// when
+		await tool.execute("apply-patch-context-test", { input: patch }, undefined, (update) => updates.push(update), {
+			cwd: directory,
+		} as never);
+
+		// then
+		const text = updates[0]?.content.find((block) => block.type === "text")?.text ?? "";
+		expect(text).toContain(" ...");
+		expect(text).toContain(" 11 line 11");
+		expect(text).toContain(" 14 line 14");
+		expect(text).toContain("-15 line 15");
+		expect(text).toContain("+15 changed 15");
+		expect(text).toContain(" 16 line 16");
+		expect(text).toContain(" 19 line 19");
+		expect(text).not.toContain(" 10 line 10");
+		expect(text).not.toContain(" 20 line 20");
 	});
 
 	it("#given progress callback throws #when applying detailed patch #then still applies all operations", async () => {

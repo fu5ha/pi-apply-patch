@@ -192,7 +192,7 @@ describe("render helpers", () => {
 		expect(rendered).toContain("apply_patch: Patching (2 files): src/a.ts, src/b.ts");
 	});
 
-	it("#given preview #when rendering result collapsed #then shows headers without diff lines", () => {
+	it("#given preview without call component #when rendering result collapsed #then renders fallback diff", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -225,10 +225,10 @@ describe("render helpers", () => {
 
 		// then
 		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
-		expect(rendered).not.toContain("+1 new");
+		expect(rendered).toContain("+1 new");
 	});
 
-	it("#given expanded preview #when rendering result #then uses OpenCode-like highlighted diff rows", () => {
+	it("#given expanded preview #when rendering result #then uses edit-style highlighted diff rows", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -260,14 +260,12 @@ describe("render helpers", () => {
 		const rendered = component?.render(200).join("\n") ?? "";
 
 		// then
-		expect(rendered).toContain("<bg:toolErrorBg><fg:toolDiffRemoved>-</fg:toolDiffRemoved><fg:muted>1</fg:muted>");
-		expect(rendered).toContain("<fg:toolDiffRemoved>alpha <inverse>old</inverse></fg:toolDiffRemoved>");
-		expect(rendered).toContain("<bg:toolSuccessBg><fg:toolDiffAdded>+</fg:toolDiffAdded><fg:muted>1</fg:muted>");
-		expect(rendered).toContain("<fg:toolDiffAdded>alpha <inverse>new</inverse></fg:toolDiffAdded>");
-		expect(rendered).toContain("<fg:toolDiffContext> </fg:toolDiffContext><fg:muted>2</fg:muted> same");
+		expect(rendered).toContain("<fg:toolDiffRemoved>-1 alpha <inverse>old</inverse></fg:toolDiffRemoved>");
+		expect(rendered).toContain("<fg:toolDiffAdded>+1 alpha <inverse>new</inverse></fg:toolDiffAdded>");
+		expect(rendered).toContain("<fg:toolDiffContext> 2 same</fg:toolDiffContext>");
 	});
 
-	it("#given partial progress preview #when rendering result #then shows realtime progress in pending widget", () => {
+	it("#given partial progress preview without call component #when rendering result #then renders fallback diff", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -300,14 +298,12 @@ describe("render helpers", () => {
 		const rendered = component?.render(200).join("\n") ?? "";
 
 		// then
-		expect(rendered).toContain("<bg:toolPendingBg>");
-		expect(rendered).toContain("<bold>Applying patch (1/2)</bold>");
 		expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
-		expect(rendered).toContain("<fg:toolDiffRemoved>alpha <inverse>old</inverse></fg:toolDiffRemoved>");
-		expect(rendered).toContain("<fg:toolDiffAdded>alpha <inverse>new</inverse></fg:toolDiffAdded>");
+		expect(rendered).toContain("<fg:toolDiffRemoved>-1 alpha <inverse>old</inverse></fg:toolDiffRemoved>");
+		expect(rendered).toContain("<fg:toolDiffAdded>+1 alpha <inverse>new</inverse></fg:toolDiffAdded>");
 	});
 
-	it("#given multi-file preview #when rendering result collapsed #then shows grouped summary", () => {
+	it("#given multi-file preview without call component #when rendering result collapsed #then renders grouped fallback diff", () => {
 		// given
 		const tool = createApplyPatchTool();
 		const result = {
@@ -337,7 +333,7 @@ describe("render helpers", () => {
 		expect(rendered).toContain("• Edited 2 files (+2 -0)");
 		expect(rendered).toContain("└ src/a.ts (+1 -0)");
 		expect(rendered).toContain("└ src/b.ts (+1 -0)");
-		expect(rendered).not.toContain("+1 one");
+		expect(rendered).toContain("+1 one");
 	});
 
 	it("#given large preview #when rendering result expanded #then shows truncation marker", () => {

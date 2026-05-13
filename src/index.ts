@@ -2,13 +2,7 @@ import { mkdir, readFile, rename, rm, stat, unlink, writeFile } from "node:fs/pr
 import path from "node:path";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { Model } from "@earendil-works/pi-ai";
-import {
-	defineTool,
-	type ExtensionAPI,
-	getLanguageFromPath,
-	highlightCode,
-	type ToolDefinition,
-} from "@earendil-works/pi-coding-agent";
+import { defineTool, type ExtensionAPI, type ToolDefinition } from "@earendil-works/pi-coding-agent";
 import { Box, Container, Spacer, Text } from "@earendil-works/pi-tui";
 import * as Diff from "diff";
 import { Type } from "typebox";
@@ -38,6 +32,14 @@ export type FreeformToolFormat = {
 };
 
 type ApplyPatchToolDefinition = ToolDefinition<typeof APPLY_PATCH_PARAMS, ApplyPatchToolDetails | undefined> & {
+	freeform: FreeformToolFormat;
+};
+
+type ApplyPatchToolDefinitionWithState = ToolDefinition<
+	typeof APPLY_PATCH_PARAMS,
+	ApplyPatchToolDetails | undefined,
+	ApplyPatchRenderState
+> & {
 	freeform: FreeformToolFormat;
 };
 
@@ -130,11 +132,7 @@ export class ApplyPatchError extends Error {
 }
 
 type ApplyPatchRenderState = {
-	cwd: string;
-	patchText: string;
-	callText: string;
-	collapsed: string;
-	expanded: string;
+	callComponent?: ApplyPatchCallRenderComponent;
 };
 
 type ApplyPatchThemeColor =
@@ -203,7 +201,15 @@ export const PATCH_PREVIEW_MAX_LINES = 16;
 export const PATCH_PREVIEW_MAX_CHARS = 4000;
 const PATCH_PREVIEW_HEAD_LINES = 8;
 const PATCH_PREVIEW_TAIL_LINES = 8;
-const applyPatchRenderStates = new Map<string, ApplyPatchRenderState>();
+
+type ApplyPatchPreviewLike = ApplyPatchPreview | { error: string };
+
+type ApplyPatchCallRenderComponent = Box & {
+	preview?: ApplyPatchPreviewLike;
+	previewArgsKey?: string;
+	previewPending?: boolean;
+	settledError?: boolean;
+};
 
 function countLines(text: string): number {
 	if (text.length === 0) {
@@ -356,7 +362,11 @@ export function extractPatchedPaths(patchText: string): string[] {
 	return Array.from(matches, (match) => match[1] ?? "");
 }
 
-function createPatchDiff(oldContent: string, newContent: string): { diff: string; added: number; removed: number } {
+function createPatchDiff(
+	oldContent: string,
+	newContent: string,
+	contextLines = 4,
+): { diff: string; added: number; removed: number } {
 	const parts = Diff.diffLines(oldContent, newContent);
 	const oldLines = oldContent.split("\n");
 	const newLines = newContent.split("\n");
@@ -366,32 +376,101 @@ function createPatchDiff(oldContent: string, newContent: string): { diff: string
 	let newLineNum = 1;
 	let added = 0;
 	let removed = 0;
+	let lastWasChange = false;
 
-	for (const part of parts) {
+	for (let partIndex = 0; partIndex < parts.length; partIndex++) {
+		const part = parts[partIndex];
+		if (!part) {
+			continue;
+		}
 		const rawLines = part.value.split("\n");
 		if (rawLines[rawLines.length - 1] === "") {
 			rawLines.pop();
 		}
 
-		for (const line of rawLines) {
-			if (part.added) {
-				output.push(`+${String(newLineNum).padStart(lineNumWidth, " ")} ${line}`);
-				newLineNum++;
-				added++;
-				continue;
-			}
+		if (part.added || part.removed) {
+			for (const line of rawLines) {
+				if (part.added) {
+					output.push(`+${String(newLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					newLineNum++;
+					added++;
+					continue;
+				}
 
-			if (part.removed) {
 				output.push(`-${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
 				oldLineNum++;
 				removed++;
-				continue;
+			}
+			lastWasChange = true;
+			continue;
+		}
+
+		const nextPart = parts[partIndex + 1];
+		const hasLeadingChange = lastWasChange;
+		const hasTrailingChange = Boolean(nextPart?.added || nextPart?.removed);
+
+		if (hasLeadingChange && hasTrailingChange) {
+			if (rawLines.length <= contextLines * 2) {
+				for (const line of rawLines) {
+					output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					oldLineNum++;
+					newLineNum++;
+				}
+			} else {
+				const leadingLines = rawLines.slice(0, contextLines);
+				const trailingLines = rawLines.slice(rawLines.length - contextLines);
+				const skippedLines = rawLines.length - leadingLines.length - trailingLines.length;
+
+				for (const line of leadingLines) {
+					output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					oldLineNum++;
+					newLineNum++;
+				}
+
+				output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+				oldLineNum += skippedLines;
+				newLineNum += skippedLines;
+
+				for (const line of trailingLines) {
+					output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+					oldLineNum++;
+					newLineNum++;
+				}
+			}
+		} else if (hasLeadingChange) {
+			const shownLines = rawLines.slice(0, contextLines);
+			const skippedLines = rawLines.length - shownLines.length;
+
+			for (const line of shownLines) {
+				output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+				oldLineNum++;
+				newLineNum++;
 			}
 
-			output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
-			oldLineNum++;
-			newLineNum++;
+			if (skippedLines > 0) {
+				output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+				oldLineNum += skippedLines;
+				newLineNum += skippedLines;
+			}
+		} else if (hasTrailingChange) {
+			const skippedLines = Math.max(0, rawLines.length - contextLines);
+			if (skippedLines > 0) {
+				output.push(` ${"".padStart(lineNumWidth, " ")} ...`);
+				oldLineNum += skippedLines;
+				newLineNum += skippedLines;
+			}
+
+			for (const line of rawLines.slice(skippedLines)) {
+				output.push(` ${String(oldLineNum).padStart(lineNumWidth, " ")} ${line}`);
+				oldLineNum++;
+				newLineNum++;
+			}
+		} else {
+			oldLineNum += rawLines.length;
+			newLineNum += rawLines.length;
 		}
+
+		lastWasChange = false;
 	}
 
 	return { diff: output.join("\n"), added, removed };
@@ -489,41 +568,8 @@ export function formatPatchPreview(
 	return lines.join("\n");
 }
 
-function getApplyPatchRenderState(toolCallId: string, cwd: string, patchText: string): ApplyPatchRenderState {
-	const existing = applyPatchRenderStates.get(toolCallId);
-	if (existing && existing.cwd === cwd && existing.patchText === patchText) {
-		return existing;
-	}
-
-	const callText = formatInFlightCallText(patchText);
-	let collapsed = "";
-	let expanded = "";
-	try {
-		const hunks = parsePatch(patchText);
-		if (hunks.length > 0) {
-			const files = hunks.map((hunk) => ({
-				filePath: hunk.filePath,
-				movePath: hunk.type === "update" ? hunk.movePath : undefined,
-				operation: hunk.type,
-				diff: "",
-				added: 0,
-				removed: 0,
-			})) satisfies ApplyPatchPreviewFile[];
-			const preview: ApplyPatchPreview = { files, added: 0, removed: 0 };
-			collapsed = formatPatchPreview(preview, cwd, false);
-			expanded = formatPatchPreview(preview, cwd, true);
-		}
-	} catch {
-		// leave summaries empty for partial/incomplete patch text
-	}
-
-	const nextState: ApplyPatchRenderState = { cwd, patchText, callText, collapsed, expanded };
-	applyPatchRenderStates.set(toolCallId, nextState);
-	return nextState;
-}
-
 export function clearApplyPatchRenderState(): void {
-	applyPatchRenderStates.clear();
+	// Renderer state now lives in pi's per-tool-call render context, matching the built-in edit tool.
 }
 
 export function formatInFlightCallText(patchText: string): string {
@@ -538,54 +584,25 @@ export function formatInFlightCallText(patchText: string): string {
 
 type RenderableAddedDiffLine = { content: string; kind: "added"; lineNumber: string; sign: "+" };
 type RenderableRemovedDiffLine = { content: string; kind: "removed"; lineNumber: string; sign: "-" };
-type RenderableContextDiffLine = { content: string; kind: "context"; lineNumber: string; sign: " " };
-type RenderableContentDiffLine = RenderableAddedDiffLine | RenderableContextDiffLine | RenderableRemovedDiffLine;
-type RenderableDiffLine = RenderableContentDiffLine | { kind: "meta"; text: string };
 
-function parseRenderableDiffLine(line: string): RenderableDiffLine {
-	const match = line.match(/^([+\- ])(\s*\d+)\s(.*)$/);
-	if (!match) {
-		return { kind: "meta", text: line };
-	}
-
-	const sign = match[1];
-	const lineNumber = match[2];
-	if ((sign !== "+" && sign !== "-" && sign !== " ") || lineNumber === undefined) {
-		return { kind: "meta", text: line };
-	}
-
-	const content = match[3] ?? "";
-	if (sign === "+") {
-		return { content, kind: "added", lineNumber, sign };
-	}
-	if (sign === "-") {
-		return { content, kind: "removed", lineNumber, sign };
-	}
-	return { content, kind: "context", lineNumber, sign };
+function parseDiffLine(line: string): { prefix: string; lineNum: string; content: string } | null {
+	const match = line.match(/^([+\-\s])(\s*\d*)\s(.*)$/);
+	if (!match) return null;
+	return { prefix: match[1] ?? "", lineNum: match[2] ?? "", content: match[3] ?? "" };
 }
 
 function replaceTabs(text: string): string {
 	return text.replace(/\t/g, "   ");
 }
 
-function highlightDiffContent(content: string, filePath: string): string {
-	const plainContent = replaceTabs(content);
-	const language = getLanguageFromPath(filePath);
-	try {
-		return highlightCode(plainContent, language)[0] ?? plainContent;
-	} catch {
-		return plainContent;
-	}
-}
-
 function renderInlineDiff(
 	oldContent: string,
 	newContent: string,
 	theme: ApplyPatchTheme,
-): { added: string; removed: string } {
+): { addedLine: string; removedLine: string } {
 	const parts = Diff.diffWords(replaceTabs(oldContent), replaceTabs(newContent));
-	let added = "";
-	let removed = "";
+	let addedLine = "";
+	let removedLine = "";
 	let firstAdded = true;
 	let firstRemoved = true;
 
@@ -594,12 +611,12 @@ function renderInlineDiff(
 			let value = part.value;
 			if (firstAdded) {
 				const leadingWhitespace = value.match(/^(\s*)/)?.[1] ?? "";
-				added += leadingWhitespace;
+				addedLine += leadingWhitespace;
 				value = value.slice(leadingWhitespace.length);
 				firstAdded = false;
 			}
 			if (value) {
-				added += theme.inverse(value);
+				addedLine += theme.inverse(value);
 			}
 			continue;
 		}
@@ -608,102 +625,80 @@ function renderInlineDiff(
 			let value = part.value;
 			if (firstRemoved) {
 				const leadingWhitespace = value.match(/^(\s*)/)?.[1] ?? "";
-				removed += leadingWhitespace;
+				removedLine += leadingWhitespace;
 				value = value.slice(leadingWhitespace.length);
 				firstRemoved = false;
 			}
 			if (value) {
-				removed += theme.inverse(value);
+				removedLine += theme.inverse(value);
 			}
 			continue;
 		}
 
-		added += part.value;
-		removed += part.value;
+		addedLine += part.value;
+		removedLine += part.value;
 	}
 
-	return { added, removed };
+	return { addedLine, removedLine };
 }
 
-function renderOpenCodeLikeDiffLine(
-	line: RenderableContentDiffLine,
-	filePath: string,
-	theme: ApplyPatchTheme,
-	contentOverride?: string,
-): string {
-	const lineNumber = theme.fg("muted", line.lineNumber);
-	if (line.kind === "context") {
-		return `${theme.fg("toolDiffContext", line.sign)}${lineNumber} ${highlightDiffContent(line.content, filePath)}`;
-	}
-
-	const diffColor = line.kind === "added" ? "toolDiffAdded" : "toolDiffRemoved";
-	const background = line.kind === "added" ? "toolSuccessBg" : "toolErrorBg";
-	const content =
-		contentOverride === undefined
-			? highlightDiffContent(line.content, filePath)
-			: theme.fg(diffColor, replaceTabs(contentOverride));
-	const rendered = `${theme.fg(diffColor, line.sign)}${lineNumber} ${content}`;
-	return theme.bg(background, rendered);
-}
-
-function renderOpenCodeLikeDiff(diffText: string, filePath: string, theme: ApplyPatchTheme): string {
-	const parsedLines = diffText.split("\n").map(parseRenderableDiffLine);
+function renderDiff(diffText: string, theme: ApplyPatchTheme): string {
+	const lines = diffText.split("\n");
 	const rendered: string[] = [];
 	let index = 0;
 
-	while (index < parsedLines.length) {
-		const line = parsedLines[index];
-		if (!line) {
+	while (index < lines.length) {
+		const line = lines[index] ?? "";
+		const parsed = parseDiffLine(line);
+
+		if (!parsed) {
+			rendered.push(theme.fg("toolDiffContext", line));
 			index++;
 			continue;
 		}
 
-		if (line.kind !== "removed") {
-			rendered.push(
-				line.kind === "meta"
-					? theme.fg("toolDiffContext", line.text)
-					: renderOpenCodeLikeDiffLine(line, filePath, theme),
-			);
+		if (parsed.prefix !== "-") {
+			if (parsed.prefix === "+") {
+				rendered.push(theme.fg("toolDiffAdded", `+${parsed.lineNum} ${replaceTabs(parsed.content)}`));
+			} else {
+				rendered.push(theme.fg("toolDiffContext", ` ${parsed.lineNum} ${replaceTabs(parsed.content)}`));
+			}
 			index++;
 			continue;
 		}
 
 		const removedLines: RenderableRemovedDiffLine[] = [];
-		while (parsedLines[index]?.kind === "removed") {
-			const removedLine = parsedLines[index];
-			if (removedLine?.kind === "removed") {
-				removedLines.push(removedLine);
-			}
+		while (index < lines.length) {
+			const removed = parseDiffLine(lines[index] ?? "");
+			if (!removed || removed.prefix !== "-") break;
+			removedLines.push({ content: removed.content, kind: "removed", lineNumber: removed.lineNum, sign: "-" });
 			index++;
 		}
 
 		const addedLines: RenderableAddedDiffLine[] = [];
-		while (parsedLines[index]?.kind === "added") {
-			const addedLine = parsedLines[index];
-			if (addedLine?.kind === "added") {
-				addedLines.push(addedLine);
-			}
+		while (index < lines.length) {
+			const added = parseDiffLine(lines[index] ?? "");
+			if (!added || added.prefix !== "+") break;
+			addedLines.push({ content: added.content, kind: "added", lineNumber: added.lineNum, sign: "+" });
 			index++;
 		}
 
-		const pairedCount = Math.min(removedLines.length, addedLines.length);
-		for (let pairIndex = 0; pairIndex < pairedCount; pairIndex++) {
-			const removedLine = removedLines[pairIndex];
-			const addedLine = addedLines[pairIndex];
-			if (!removedLine || !addedLine) {
-				continue;
+		if (removedLines.length === 1 && addedLines.length === 1) {
+			const removedLine = removedLines[0];
+			const addedLine = addedLines[0];
+			if (removedLine && addedLine) {
+				const inline = renderInlineDiff(removedLine.content, addedLine.content, theme);
+				rendered.push(theme.fg("toolDiffRemoved", `-${removedLine.lineNumber} ${inline.removedLine}`));
+				rendered.push(theme.fg("toolDiffAdded", `+${addedLine.lineNumber} ${inline.addedLine}`));
 			}
-
-			const inline = renderInlineDiff(removedLine.content, addedLine.content, theme);
-			rendered.push(renderOpenCodeLikeDiffLine(removedLine, filePath, theme, inline.removed));
-			rendered.push(renderOpenCodeLikeDiffLine(addedLine, filePath, theme, inline.added));
+			continue;
 		}
 
-		for (const removedLine of removedLines.slice(pairedCount)) {
-			rendered.push(renderOpenCodeLikeDiffLine(removedLine, filePath, theme));
+		for (const removedLine of removedLines) {
+			rendered.push(theme.fg("toolDiffRemoved", `-${removedLine.lineNumber} ${replaceTabs(removedLine.content)}`));
 		}
-		for (const addedLine of addedLines.slice(pairedCount)) {
-			rendered.push(renderOpenCodeLikeDiffLine(addedLine, filePath, theme));
+		for (const addedLine of addedLines) {
+			rendered.push(theme.fg("toolDiffAdded", `+${addedLine.lineNumber} ${replaceTabs(addedLine.content)}`));
 		}
 	}
 
@@ -717,38 +712,34 @@ function renderPatchPreview(
 	expanded: boolean,
 ): string {
 	if (expanded) {
-		try {
-			const renderFile = (file: ApplyPatchPreviewFile, headerPrefix: string): string => {
-				const header = `• ${formatPatchOperation(file.operation)} ${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
-				if (!file.diff) {
-					return headerPrefix.length > 0
-						? `${headerPrefix}${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`
-						: header;
-				}
-				const previewDiff = truncatePreview(file.diff);
-				const renderedDiff = renderOpenCodeLikeDiff(previewDiff, file.movePath ?? file.filePath, theme);
-				if (headerPrefix.length > 0) {
-					const nestedHeader = `${headerPrefix}${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
-					return `${nestedHeader}\n${renderedDiff
-						.split("\n")
-						.map((line) => `    ${line}`)
-						.join("\n")}`;
-				}
-				return `${header}\n${renderedDiff}`;
-			};
-
-			if (preview.files.length === 1) {
-				const file = preview.files[0];
-				return file ? renderFile(file, "") : "";
+		const renderFile = (file: ApplyPatchPreviewFile, headerPrefix: string): string => {
+			const header = `• ${formatPatchOperation(file.operation)} ${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
+			if (!file.diff) {
+				return headerPrefix.length > 0
+					? `${headerPrefix}${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`
+					: header;
 			}
-
-			const noun = preview.files.length === 1 ? "file" : "files";
-			const renderedFiles = preview.files.map((file) => renderFile(file, "  └ ")).join("\n");
-			if (renderedFiles.length > 0) {
-				return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
+			const previewDiff = truncatePreview(file.diff);
+			const renderedDiff = renderDiff(previewDiff, theme);
+			if (headerPrefix.length > 0) {
+				const nestedHeader = `${headerPrefix}${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
+				return `${nestedHeader}\n${renderedDiff
+					.split("\n")
+					.map((line) => `    ${line}`)
+					.join("\n")}`;
 			}
-		} catch {
-			// fall back to manual themed line rendering
+			return `${header}\n${renderedDiff}`;
+		};
+
+		if (preview.files.length === 1) {
+			const file = preview.files[0];
+			return file ? renderFile(file, "") : "";
+		}
+
+		const noun = preview.files.length === 1 ? "file" : "files";
+		const renderedFiles = preview.files.map((file) => renderFile(file, "  └ ")).join("\n");
+		if (renderedFiles.length > 0) {
+			return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
 		}
 	}
 
@@ -771,6 +762,144 @@ function renderPatchPreview(
 			return theme.fg("toolDiffContext", line);
 		})
 		.join("\n");
+}
+
+function createApplyPatchCallRenderComponent(): ApplyPatchCallRenderComponent {
+	return Object.assign(new Box(1, 1, (text: string) => text), {
+		preview: undefined as ApplyPatchPreviewLike | undefined,
+		previewArgsKey: undefined as string | undefined,
+		previewPending: false,
+		settledError: false,
+	});
+}
+
+function getApplyPatchCallRenderComponent(
+	state: ApplyPatchRenderState | undefined,
+	lastComponent: unknown,
+): ApplyPatchCallRenderComponent {
+	if (lastComponent instanceof Box) {
+		const component = lastComponent as ApplyPatchCallRenderComponent;
+		if (state) {
+			state.callComponent = component;
+		}
+		return component;
+	}
+	if (state?.callComponent) {
+		return state.callComponent;
+	}
+	const component = createApplyPatchCallRenderComponent();
+	if (state) {
+		state.callComponent = component;
+	}
+	return component;
+}
+
+function getApplyPatchHeaderBg(
+	preview: ApplyPatchPreviewLike | undefined,
+	settledError: boolean | undefined,
+	theme: ApplyPatchTheme,
+): (text: string) => string {
+	if (preview) {
+		if ("error" in preview) {
+			return (text: string) => theme.bg("toolErrorBg", text);
+		}
+		return (text: string) => theme.bg("toolSuccessBg", text);
+	}
+	if (settledError) {
+		return (text: string) => theme.bg("toolErrorBg", text);
+	}
+	return (text: string) => theme.bg("toolPendingBg", text);
+}
+
+function formatApplyPatchCall(args: ApplyPatchParams | undefined, theme: ApplyPatchTheme): string {
+	const patchText = args?.input ?? "";
+	const callText = formatInFlightCallText(patchText);
+	const text = callText.length > 0 ? `apply_patch: ${callText}` : "apply_patch";
+	return theme.fg("toolTitle", theme.bold(text));
+}
+
+function buildApplyPatchCallComponent(
+	component: ApplyPatchCallRenderComponent,
+	args: ApplyPatchParams | undefined,
+	cwd: string,
+	theme: ApplyPatchTheme,
+): ApplyPatchCallRenderComponent {
+	component.setBgFn(getApplyPatchHeaderBg(component.preview, component.settledError, theme));
+	component.clear();
+	component.addChild(new Text(formatApplyPatchCall(args, theme), 0, 0));
+
+	if (!component.preview) {
+		return component;
+	}
+
+	const body =
+		"error" in component.preview
+			? theme.fg("error", component.preview.error)
+			: renderPatchPreview(component.preview, cwd, theme, true);
+	component.addChild(new Spacer(1));
+	component.addChild(new Text(body, 0, 0));
+	return component;
+}
+
+function setApplyPatchPreview(
+	component: ApplyPatchCallRenderComponent,
+	preview: ApplyPatchPreviewLike,
+	argsKey: string | undefined,
+): boolean {
+	const current = component.preview;
+	const changed =
+		current === undefined ||
+		("error" in current && "error" in preview
+			? current.error !== preview.error
+			: "error" in current !== "error" in preview) ||
+		(!("error" in current) && !("error" in preview) && JSON.stringify(current) !== JSON.stringify(preview));
+	component.preview = preview;
+	component.previewArgsKey = argsKey;
+	component.previewPending = false;
+	return changed;
+}
+
+function getApplyPatchArgsKey(args: ApplyPatchParams | undefined): string | undefined {
+	if (!args) {
+		return undefined;
+	}
+	return JSON.stringify({ input: args.input });
+}
+
+async function computeApplyPatchPreview(cwd: string, patchText: string): Promise<ApplyPatchPreviewLike> {
+	try {
+		return await createPatchPreview(cwd, parsePatch(patchText));
+	} catch (error) {
+		return { error: error instanceof Error ? error.message : String(error) };
+	}
+}
+
+function formatApplyPatchResult(
+	preview: ApplyPatchPreviewLike | undefined,
+	result: AgentToolResult<ApplyPatchToolDetails | undefined>,
+	theme: ApplyPatchTheme,
+	cwd: string,
+	isError: boolean,
+): string | undefined {
+	if (isError) {
+		const errorText = result.content
+			.filter((block) => block.type === "text")
+			.map((block) => block.text)
+			.filter((value) => typeof value === "string" && value.length > 0)
+			.join("\n");
+		const previewError = preview && "error" in preview ? preview.error : undefined;
+		if (!errorText || errorText === previewError) {
+			return undefined;
+		}
+		return theme.fg("error", errorText);
+	}
+
+	const resultPreview = result.details?.preview;
+	if (resultPreview && (!preview || "error" in preview || JSON.stringify(resultPreview) !== JSON.stringify(preview))) {
+		return renderPatchPreview(resultPreview, cwd, theme, true);
+	}
+
+	return undefined;
 }
 
 function formatPendingPatchPaths(patchText: string): string {
@@ -1228,12 +1357,13 @@ function syncToolset(
 	pi.setActiveTools(replaceApplyPatchWithEditTools(currentToolNames));
 }
 
-export function createApplyPatchTool(): ApplyPatchToolDefinition {
+export function createApplyPatchTool(): ApplyPatchToolDefinitionWithState {
 	const tool = defineTool({
 		name: "apply_patch",
 		label: "ApplyPatch",
 		description: APPLY_PATCH_FREEFORM_DESCRIPTION,
 		parameters: APPLY_PATCH_PARAMS,
+		renderShell: "self",
 		prepareArguments: normalizeApplyPatchArguments,
 		promptSnippet: "Apply Codex-format file patches with apply_patch",
 		promptGuidelines: [
@@ -1305,44 +1435,63 @@ export function createApplyPatchTool(): ApplyPatchToolDefinition {
 			};
 		},
 		renderCall(args, theme, context) {
-			if (!context.argsComplete) {
-				return new Text(theme.fg("toolTitle", theme.bold("apply_patch: Patching")), 0, 0);
+			const component = getApplyPatchCallRenderComponent(context.state, context.lastComponent);
+			const normalizedArgs = normalizeApplyPatchArguments(args);
+			const argsKey = getApplyPatchArgsKey(normalizedArgs);
+
+			if (component.previewArgsKey !== argsKey) {
+				component.preview = undefined;
+				component.previewArgsKey = argsKey;
+				component.previewPending = false;
+				component.settledError = false;
 			}
 
-			const normalizedArgs = normalizeApplyPatchArguments(args);
-			const renderState = getApplyPatchRenderState(context.toolCallId, context.cwd, normalizedArgs.input);
-			const text = renderState.callText.length > 0 ? `apply_patch: ${renderState.callText}` : "apply_patch";
-			return new Text(theme.fg("toolTitle", theme.bold(text)), 0, 0);
+			if (context.argsComplete && normalizedArgs.input && !component.preview && !component.previewPending) {
+				component.previewPending = true;
+				const requestKey = argsKey;
+				void computeApplyPatchPreview(context.cwd, normalizedArgs.input).then((preview) => {
+					if (component.previewArgsKey === requestKey) {
+						setApplyPatchPreview(component, preview, requestKey);
+						context.invalidate?.();
+					}
+				});
+			}
+
+			return buildApplyPatchCallComponent(component, normalizedArgs, context.cwd, theme);
 		},
-		renderResult(result, options, theme, context) {
-			const component = new Container();
-			const preview = result.details?.preview;
-			if (preview) {
-				const bgName = options.isPartial ? "toolPendingBg" : "toolSuccessBg";
-				const progress = result.details?.progress;
-				const title = progress
-					? `Applying patch (${progress.applied + progress.failed}/${progress.total})`
-					: "Applying patch";
-				const box = new Box(1, 1, (text: string) => theme.bg(bgName, text));
-				box.addChild(new Text(theme.fg("toolTitle", theme.bold(title)), 0, 0));
-				box.addChild(new Spacer(1));
-				const expanded = options.isPartial ? true : (options.expanded ?? true);
-				box.addChild(new Text(renderPatchPreview(preview, context.cwd, theme, expanded), 0, 0));
-				component.addChild(box);
+		renderResult(result, _options, theme, context) {
+			const callComponent = context.state?.callComponent;
+			const normalizedArgs = normalizeApplyPatchArguments(context.args);
+			const argsKey = getApplyPatchArgsKey(normalizedArgs);
+			let changed = false;
+			if (callComponent) {
+				const preview = result.details?.preview;
+				if (preview) {
+					changed = setApplyPatchPreview(callComponent, preview, argsKey) || changed;
+				}
+				if (result.details?.progress && callComponent.preview) {
+					changed = true;
+				}
+				if (callComponent.settledError !== context.isError) {
+					callComponent.settledError = context.isError;
+					changed = true;
+				}
+				if (changed) {
+					buildApplyPatchCallComponent(callComponent, normalizedArgs, context.cwd, theme);
+				}
+			}
+
+			const output = formatApplyPatchResult(callComponent?.preview, result, theme, context.cwd, context.isError);
+			const component = (context.lastComponent as Container | undefined) ?? new Container();
+			component.clear();
+			if (!output) {
 				return component;
 			}
-
-			const text = result.content
-				.filter((block) => block.type === "text")
-				.map((block) => block.text)
-				.filter((value) => typeof value === "string" && value.length > 0)
-				.join("\n");
-			if (text) {
-				component.addChild(new Text(theme.fg("toolOutput", text), 0, 0));
-			}
+			component.addChild(new Spacer(1));
+			component.addChild(new Text(output, 1, 0));
 			return component;
 		},
-	});
+	} satisfies ToolDefinition<typeof APPLY_PATCH_PARAMS, ApplyPatchToolDetails | undefined, ApplyPatchRenderState>);
 
 	return Object.assign(tool, {
 		freeform: {
