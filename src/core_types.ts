@@ -33,6 +33,7 @@ export type ApplyPatchPreviewFile = {
     filePath: string;
     movePath?: string;
     operation: ApplyPatchOperation;
+    content?: string;
     diff: string;
     added: number;
     removed: number;

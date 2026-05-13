@@ -69,6 +69,24 @@ type StreamingAddFileSection = {
     index: number;
 };
 
+type AddFileBodyRenderSection = {
+    kind: "addBody";
+    key: string;
+    path: string;
+    content: string;
+    added: number;
+    removed: number;
+    file?: ApplyPatchPreviewFile;
+};
+
+type DiffRenderSection = {
+    kind: "diff";
+    file: ApplyPatchPreviewFile;
+    headerPrefix: string;
+};
+
+type PatchRenderSection = AddFileBodyRenderSection | DiffRenderSection;
+
 type StreamingAddFileScan = {
     sections: StreamingAddFileSection[];
     active: StreamingAddFileSection | undefined;
@@ -208,18 +226,19 @@ function trimTrailingEmptyLines(lines: string[]): string[] {
 }
 
 function formatStreamingAddFileBody(
-    section: StreamingAddFileSection,
+    path: string,
+    content: string,
     cache: ApplyPatchStreamingAddFileHighlightCache | undefined,
     theme: ApplyPatchTheme,
     expanded: boolean,
 ): string | undefined {
-    if (!section.content) {
+    if (!content) {
         return undefined;
     }
-    const lang = getLanguageFromPath(section.path);
+    const lang = getLanguageFromPath(path);
     const renderedLines = lang
-        ? (cache?.highlightedLines ?? replaceTabs(normalizeDisplayText(section.content)).split("\n"))
-        : normalizeDisplayText(section.content)
+        ? (cache?.highlightedLines ?? replaceTabs(normalizeDisplayText(content)).split("\n"))
+        : normalizeDisplayText(content)
               .split("\n")
               .map((line) => theme.fg("toolOutput", replaceTabs(line)));
     const lines = trimTrailingEmptyLines(renderedLines);
@@ -238,57 +257,56 @@ function countRenderableLines(content: string): number {
     return trimTrailingEmptyLines(normalizeDisplayText(content).split("\n")).length;
 }
 
-function addSectionCacheKey(section: StreamingAddFileSection): string {
-    return `${section.index}:${section.path}`;
+function addSectionKey(index: number, path: string): string {
+    return `add:${index}:${path}`;
 }
 
 function getAddSectionCache(
     component: ApplyPatchCallRenderComponent,
-    section: StreamingAddFileSection,
+    key: string,
 ): ApplyPatchStreamingAddFileHighlightCache | undefined {
-    return component.streamingAddFileCaches?.[addSectionCacheKey(section)];
+    return component.streamingAddFileCaches?.[key];
 }
 
 function setAddSectionCache(
     component: ApplyPatchCallRenderComponent,
-    section: StreamingAddFileSection,
+    key: string,
     cache: ApplyPatchStreamingAddFileHighlightCache | undefined,
 ): void {
     component.streamingAddFileCaches ??= {};
-    component.streamingAddFileCaches[addSectionCacheKey(section)] = cache;
+    component.streamingAddFileCaches[key] = cache;
 }
 
 function clearAddSectionCaches(component: ApplyPatchCallRenderComponent): void {
     component.streamingAddFileCaches = undefined;
 }
 
-function renderAddFileSection(
+function renderAddBodySection(
     component: ApplyPatchCallRenderComponent,
-    section: StreamingAddFileSection,
+    section: AddFileBodyRenderSection,
     cwd: string,
     theme: ApplyPatchTheme,
     expanded: boolean,
-    file?: ApplyPatchPreviewFile,
     headerPrefix = "",
 ): string | undefined {
     const cache = updateStreamingHighlightCacheIncremental(
-        getAddSectionCache(component, section),
+        getAddSectionCache(component, section.key),
         section.path,
         section.content,
     );
-    setAddSectionCache(component, section, cache);
-    const body = formatStreamingAddFileBody(section, cache, theme, expanded);
+    setAddSectionCache(component, section.key, cache);
+    const body = formatStreamingAddFileBody(section.path, section.content, cache, theme, expanded);
     if (!body) {
         return undefined;
     }
     const previewFile =
-        file ??
+        section.file ??
         ({
             filePath: section.path,
             operation: "add",
             diff: "",
-            added: countRenderableLines(section.content),
-            removed: 0,
+            added: section.added,
+            removed: section.removed,
         } satisfies ApplyPatchPreviewFile);
     const summary = `${formatColoredPatchFilePath(previewFile, cwd, theme)} ${formatColoredLineCountSummary(previewFile.added, previewFile.removed, theme)}`;
     const header =
@@ -308,56 +326,95 @@ function renderProvisionalAddFileSections(
     expanded: boolean,
     argsComplete: boolean,
 ): string | undefined {
-    const sections = argsComplete
-        ? getSingleOrMultipleAddFileSections(args)
-        : extractAddFileSections(args?.input ?? "");
+    const sections = getDraftAddBodySections(args, argsComplete);
     const rendered = sections
-        .map((section) => renderAddFileSection(component, section, cwd, theme, expanded))
+        .map((section) => renderAddBodySection(component, section, cwd, theme, expanded))
         .filter((section): section is string => typeof section === "string" && section.length > 0);
     return rendered.length > 0 ? rendered.join("\n\n") : undefined;
 }
 
-function renderMixedPatchPreview(
+function renderPatchRenderSections(
     component: ApplyPatchCallRenderComponent,
-    args: ApplyPatchParams | undefined,
-    preview: ApplyPatchPreview,
+    sections: PatchRenderSection[],
     cwd: string,
     theme: ApplyPatchTheme,
     expanded: boolean,
 ): string {
-    const addSectionsByIndex = new Map<number, StreamingAddFileSection>();
-    for (const section of getSingleOrMultipleAddFileSections(args)) {
-        addSectionsByIndex.set(section.index, section);
-    }
-
-    const renderedFiles = preview.files.map((file, index) => {
-        const addSection = addSectionsByIndex.get(index);
-        if (file.operation === "add" && addSection) {
-            return renderAddFileSection(component, addSection, cwd, theme, expanded, file, "");
+    const rendered = sections.map((section) => {
+        if (section.kind === "addBody") {
+            return renderAddBodySection(component, section, cwd, theme, expanded, "");
         }
-        return renderPatchFilePreview(file, cwd, theme, expanded, "");
+        return renderPatchFilePreview(section.file, cwd, theme, expanded, section.headerPrefix);
     });
 
-    if (preview.files.length === 1) {
-        return renderedFiles[0] ?? "";
+    if (sections.length === 1) {
+        return rendered[0] ?? "";
     }
 
-    return renderedFiles.filter((file): file is string => typeof file === "string" && file.length > 0).join("\n\n");
+    return rendered.filter((file): file is string => typeof file === "string" && file.length > 0).join("\n\n");
 }
 
-function getSingleOrMultipleAddFileSections(args: ApplyPatchParams | undefined): StreamingAddFileSection[] {
+function toAddBodySection(section: StreamingAddFileSection): AddFileBodyRenderSection {
+    return {
+        kind: "addBody",
+        key: addSectionKey(section.index, section.path),
+        path: section.path,
+        content: section.content,
+        added: countRenderableLines(section.content),
+        removed: 0,
+    };
+}
+
+function getDraftAddBodySections(
+    args: ApplyPatchParams | undefined,
+    argsComplete: boolean,
+): AddFileBodyRenderSection[] {
     if (!args?.input) {
         return [];
+    }
+
+    if (!argsComplete) {
+        return extractAddFileSections(args.input).map(toAddBodySection);
     }
 
     try {
         const hunks = parsePatch(args.input);
         return hunks.flatMap((hunk, index) =>
-            hunk.type === "add" ? [{ path: hunk.filePath, content: hunk.content, index }] : [],
+            hunk.type === "add" ? [toAddBodySection({ path: hunk.filePath, content: hunk.content, index })] : [],
         );
     } catch {
         return [];
     }
+}
+
+function contentFromAddedDiff(diffText: string): string {
+    const lines: string[] = [];
+    for (const line of diffText.split("\n")) {
+        const parsed = parseDiffLine(line);
+        if (parsed?.prefix === "+") {
+            lines.push(parsed.content);
+        }
+    }
+    return lines.length > 0 ? `${lines.join("\n")}\n` : "";
+}
+
+function getPreviewRenderSections(preview: ApplyPatchPreview): PatchRenderSection[] {
+    return preview.files.map((file, index) => {
+        if (file.operation === "add") {
+            const content = file.content ?? contentFromAddedDiff(file.diff);
+            return {
+                kind: "addBody",
+                key: addSectionKey(index, file.filePath),
+                path: file.filePath,
+                content,
+                added: file.added,
+                removed: file.removed,
+                file,
+            };
+        }
+
+        return { kind: "diff", file, headerPrefix: "" };
+    });
 }
 
 function renderInlineDiff(
@@ -680,7 +737,7 @@ export function buildApplyPatchCallComponent(
     const body =
         "error" in component.preview
             ? theme.fg("error", component.preview.error)
-            : renderMixedPatchPreview(component, args, component.preview, cwd, theme, expanded);
+            : renderPatchRenderSections(component, getPreviewRenderSections(component.preview), cwd, theme, expanded);
     addBody(body);
     return component;
 }

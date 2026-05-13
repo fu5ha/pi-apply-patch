@@ -62,6 +62,7 @@ export async function createPatchPreview(cwd: string, hunks: ParsedPatch[]): Pro
             files.push({
                 filePath: hunk.filePath,
                 operation: oldContent.length > 0 ? "update" : "add",
+                content: oldContent.length > 0 ? undefined : hunk.content,
                 ...diff,
             });
             continue;

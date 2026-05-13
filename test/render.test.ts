@@ -268,6 +268,63 @@ describe("render helpers", () => {
         expect(rendered).not.toContain("+1 const value = 1;");
     });
 
+    it("#given add file draft becomes preview #when rendering #then content remains unchanged", () => {
+        // given
+        const component = getApplyPatchCallRenderComponent(undefined, undefined);
+        const args = {
+            input: `*** Begin Patch
+*** Add File: src/new.ts
++const value = 1;
+++literalPlus();
+*** End Patch`,
+        };
+
+        // when
+        const draft = buildApplyPatchCallComponent(
+            component,
+            args,
+            "/workspace/project",
+            identityTheme as never,
+            false,
+            true,
+        )
+            .render(120)
+            .join("\n");
+        setApplyPatchPreview(
+            component,
+            {
+                files: [
+                    {
+                        filePath: "src/new.ts",
+                        operation: "add",
+                        content: "const value = 1;\n+literalPlus();\n",
+                        diff: "+1 const value = 1;\n+2 +literalPlus();",
+                        added: 2,
+                        removed: 0,
+                    },
+                ],
+                added: 2,
+                removed: 0,
+            },
+            undefined,
+        );
+        const final = buildApplyPatchCallComponent(
+            component,
+            args,
+            "/workspace/project",
+            identityTheme as never,
+            false,
+            true,
+        )
+            .render(120)
+            .join("\n");
+
+        // then
+        expect(final).toBe(draft);
+        expect(final).toContain("+literalPlus();");
+        expect(final).not.toContain("++literalPlus();");
+    });
+
     it("#given successful completed diff preview #when rendering call #then header is success and body stays pending", () => {
         // given
         const component = getApplyPatchCallRenderComponent(undefined, undefined);
