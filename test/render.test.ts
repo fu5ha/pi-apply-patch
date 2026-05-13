@@ -319,6 +319,9 @@ describe("render helpers", () => {
             .join("\n");
 
         // then
+        expect(rendered).not.toContain("Edited 2 files");
+        expect(rendered).toContain("◆ Add src/new.ts");
+        expect(rendered).toContain("◆ Edited src/existing.ts");
         expect(rendered).toContain("const value = 1;");
         expect(rendered).not.toContain("+1 const value = 1;");
         expect(rendered).toContain("old");
@@ -401,7 +404,7 @@ describe("render helpers", () => {
         const rendered = component?.render(200).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
+        expect(rendered).toContain("◆ Edited src/foo.ts (+1 -1)");
         expect(rendered).toContain("+1 new");
     });
 
@@ -483,7 +486,7 @@ describe("render helpers", () => {
         const rendered = component?.render(200).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("• Edited src/foo.ts (+1 -1)");
+        expect(rendered).toContain("◆ Edited src/foo.ts (+1 -1)");
         expect(rendered).toContain("<fg:toolDiffRemoved>-1 alpha <inverse>old</inverse></fg:toolDiffRemoved>");
         expect(rendered).toContain("<fg:toolDiffAdded>+1 alpha <inverse>new</inverse></fg:toolDiffAdded>");
     });
@@ -531,7 +534,7 @@ describe("render helpers", () => {
         const rendered = component?.render(400).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("• Edited 2 files (+2 -0)");
+        expect(rendered).toContain("◆ Edited 2 files (+2 -0)");
         expect(rendered).toContain("└ src/a.ts (+1 -0)");
         expect(rendered).toContain("└ src/b.ts (+1 -0)");
         expect(rendered).toContain("+1 one");
@@ -627,7 +630,7 @@ describe("render helpers", () => {
         const rendered = component?.render(400).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("• Edited src/large.ts (+50 -0)");
+        expect(rendered).toContain("◆ Edited src/large.ts (+50 -0)");
         expect(rendered).toContain("+10 line");
         expect(rendered).not.toContain("+11 line");
         expect(rendered).toContain("... (40 more lines,");
@@ -671,7 +674,7 @@ describe("render helpers", () => {
         const rendered = component?.render(400).join("\n") ?? "";
 
         // then
-        expect(rendered).toContain("• Edited src/large.ts (+50 -0)");
+        expect(rendered).toContain("◆ Edited src/large.ts (+50 -0)");
         expect(rendered).toContain("+50 line");
         expect(rendered).not.toContain("more lines");
     });

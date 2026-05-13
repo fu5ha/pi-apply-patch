@@ -299,7 +299,7 @@ function renderAddFileSection(
             removed: 0,
         } satisfies ApplyPatchPreviewFile);
     const summary = `${formatPatchFilePath(previewFile, cwd)} ${formatLineCountSummary(previewFile.added, previewFile.removed)}`;
-    const header = headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `• Add ${summary}`;
+    const header = headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `◆ Add ${summary}`;
     const indent = headerPrefix.length > 0 ? "    " : "";
     return `${header}\n${body
         .split("\n")
@@ -321,7 +321,7 @@ function renderProvisionalAddFileSections(
     const rendered = sections
         .map((section) => renderAddFileSection(component, section, cwd, theme, expanded))
         .filter((section): section is string => typeof section === "string" && section.length > 0);
-    return rendered.length > 0 ? rendered.join("\n") : undefined;
+    return rendered.length > 0 ? rendered.join("\n\n") : undefined;
 }
 
 function renderMixedPatchPreview(
@@ -340,27 +340,16 @@ function renderMixedPatchPreview(
     const renderedFiles = preview.files.map((file, index) => {
         const addSection = addSectionsByIndex.get(index);
         if (file.operation === "add" && addSection) {
-            return renderAddFileSection(
-                component,
-                addSection,
-                cwd,
-                theme,
-                expanded,
-                file,
-                preview.files.length === 1 ? "" : "  └ ",
-            );
+            return renderAddFileSection(component, addSection, cwd, theme, expanded, file, "");
         }
-        return renderPatchFilePreview(file, cwd, theme, expanded, preview.files.length === 1 ? "" : "  └ ");
+        return renderPatchFilePreview(file, cwd, theme, expanded, "");
     });
 
     if (preview.files.length === 1) {
         return renderedFiles[0] ?? "";
     }
 
-    const noun = preview.files.length === 1 ? "file" : "files";
-    return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles
-        .filter((file): file is string => typeof file === "string" && file.length > 0)
-        .join("\n")}`;
+    return renderedFiles.filter((file): file is string => typeof file === "string" && file.length > 0).join("\n\n");
 }
 
 function getSingleOrMultipleAddFileSections(args: ApplyPatchParams | undefined): StreamingAddFileSection[] {
@@ -376,17 +365,6 @@ function getSingleOrMultipleAddFileSections(args: ApplyPatchParams | undefined):
     } catch {
         return [];
     }
-}
-
-function hasCompletedAddFileBody(
-    args: ApplyPatchParams | undefined,
-    preview: ApplyPatchPreviewLike | undefined,
-): boolean {
-    if (!preview || "error" in preview) {
-        return false;
-    }
-    const addIndexes = new Set(getSingleOrMultipleAddFileSections(args).map((section) => section.index));
-    return preview.files.some((file, index) => file.operation === "add" && addIndexes.has(index));
 }
 
 function renderInlineDiff(
@@ -544,7 +522,7 @@ function renderPatchFilePreview(
 ): string {
     const summary = `${formatPatchFilePath(file, cwd)} ${formatLineCountSummary(file.added, file.removed)}`;
     const header =
-        headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `• ${formatPatchOperation(file.operation)} ${summary}`;
+        headerPrefix.length > 0 ? `${headerPrefix}${summary}` : `◆ ${formatPatchOperation(file.operation)} ${summary}`;
     if (!file.diff) {
         return header;
     }
@@ -572,11 +550,11 @@ function renderPatchPreview(
     const noun = preview.files.length === 1 ? "file" : "files";
     const renderedFiles = preview.files
         .map((file) => renderPatchFilePreview(file, cwd, theme, expanded, "  └ "))
-        .join("\n");
+        .join("\n\n");
     if (renderedFiles.length === 0) {
         return "";
     }
-    return `• Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
+    return `◆ Edited ${preview.files.length} ${noun} ${formatLineCountSummary(preview.added, preview.removed)}\n${renderedFiles}`;
 }
 
 function createApplyPatchCallRenderComponent(): ApplyPatchCallRenderComponent {
@@ -618,7 +596,7 @@ function getApplyPatchHeaderBg(
         if ("error" in preview) {
             return (text: string) => theme.bg("toolErrorBg", text);
         }
-        return (text: string) => theme.bg("toolSuccessBg", text);
+        return (text: string) => theme.bg("toolPendingBg", text);
     }
     if (settledError) {
         return (text: string) => theme.bg("toolErrorBg", text);
@@ -641,11 +619,7 @@ export function buildApplyPatchCallComponent(
     expanded: boolean,
     argsComplete: boolean,
 ): ApplyPatchCallRenderComponent {
-    component.setBgFn(
-        hasCompletedAddFileBody(args, component.preview)
-            ? (text: string) => theme.bg("toolPendingBg", text)
-            : getApplyPatchHeaderBg(component.preview, component.settledError, theme),
-    );
+    component.setBgFn(getApplyPatchHeaderBg(component.preview, component.settledError, theme));
     component.clear();
     component.addChild(new Text(formatApplyPatchCall(args, theme), 0, 0));
 
