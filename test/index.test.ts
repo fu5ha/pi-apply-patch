@@ -6,7 +6,8 @@ import { __testWriteFileAtomic } from "../src/file_ops.js";
 import registerApplyPatchExtension from "../src/index.js";
 import { applyPatch, applyPatchDetailed } from "../src/patch/apply.js";
 import { APPLY_PATCH_FREEFORM_DESCRIPTION, APPLY_PATCH_LARK_GRAMMAR } from "../src/patch/constants.js";
-import { extractPatchedPaths } from "../src/patch/parse.js";
+import { extractPatchedPaths, parsePatch } from "../src/patch/parse.js";
+import { createPatchPreview } from "../src/preview/preview.js";
 import { createApplyPatchTool } from "../src/tool.js";
 
 const tempDirectories: string[] = [];
@@ -391,6 +392,33 @@ describe("pi-apply-patch", () => {
         expect(text).toContain(" 19 line 19");
         expect(text).not.toContain(" 10 line 10");
         expect(text).not.toContain(" 20 line 20");
+    });
+
+    it("#given update patch for CRLF file #when previewed and applied #then preserves line endings and shows semantic diff", async () => {
+        // given
+        const directory = await createTempDirectory();
+        await writeFile(path.join(directory, "entry.ts"), "import { main } from './main';\r\n\r\nmain();\r\n", "utf-8");
+        const patch = `*** Begin Patch
+*** Update File: entry.ts
+@@
++#!/usr/bin/env node
+ import { main } from './main';
+ 
+ main();
+*** End Patch`;
+
+        // when
+        const preview = await createPatchPreview(directory, parsePatch(patch));
+        await applyPatchDetailed(directory, patch);
+        const content = await readFile(path.join(directory, "entry.ts"), "utf-8");
+
+        // then
+        expect(preview.files[0]?.added).toBe(1);
+        expect(preview.files[0]?.removed).toBe(0);
+        expect(preview.files[0]?.diff).toContain("+1 #!/usr/bin/env node");
+        expect(preview.files[0]?.diff).not.toContain("-1 import");
+        expect(preview.files[0]?.diff).not.toContain("\r");
+        expect(content).toBe("#!/usr/bin/env node\r\nimport { main } from './main';\r\n\r\nmain();\r\n");
     });
 
     it("#given progress callback throws #when applying detailed patch #then still applies all operations", async () => {

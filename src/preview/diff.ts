@@ -21,7 +21,7 @@ export function createPatchDiff(
         if (!part) {
             continue;
         }
-        const rawLines = part.value.split("\n");
+        const rawLines = part.value.split("\n").map((line) => (line.endsWith("\r") ? line.slice(0, -1) : line));
         if (rawLines[rawLines.length - 1] === "") {
             rawLines.pop();
         }

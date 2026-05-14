@@ -69,11 +69,22 @@ function splitFileLines(content: string): string[] {
     return lines;
 }
 
+function detectLineEnding(content: string): string {
+    if (content.includes("\r\n")) {
+        return "\r\n";
+    }
+    if (content.includes("\r")) {
+        return "\r";
+    }
+    return "\n";
+}
+
 export function replaceChunks(
     content: string,
     filePath: string,
     chunks: PatchChunk[],
 ): { content: string; fuzz: number } {
+    const lineEnding = detectLineEnding(content);
     const originalLines = splitFileLines(content);
     const replacements: {
         start: number;
@@ -133,7 +144,7 @@ export function replaceChunks(
         nextLines.splice(replacement.start, replacement.oldLength, ...replacement.newLines);
     }
     nextLines.push("");
-    return { content: nextLines.join("\n"), fuzz };
+    return { content: nextLines.join(lineEnding), fuzz };
 }
 
 export function resolvePatchPath(cwd: string, filePath: string): string {
