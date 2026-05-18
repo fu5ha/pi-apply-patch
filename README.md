@@ -6,13 +6,13 @@ Codex-style `apply_patch` tool extension for the [pi coding agent](https://githu
 
 The extension registers one LLM-callable tool: `apply_patch`. The tool accepts Codex patch envelopes and applies file additions, updates, deletions, and moves after resolving file paths against the current workspace.
 
-| Case | Result |
-|------|--------|
-| OpenAI GPT model active | replaces `write` and `edit` with `apply_patch` |
-| Non-GPT model active | restores the original `write` and `edit` toolset |
-| Raw freeform patch input | accepted and applied |
-| JSON `{ "input": "..." }` patch input | accepted and applied |
-| Absolute or parent-escaping path | accepted and resolved by Node path semantics |
+| Case                                  | Result                                           |
+| ------------------------------------- | ------------------------------------------------ |
+| OpenAI GPT model active               | replaces `write` and `edit` with `apply_patch`   |
+| Non-GPT model active                  | restores the original `write` and `edit` toolset |
+| Raw freeform patch input              | accepted and applied                             |
+| JSON `{ "input": "..." }` patch input | accepted and applied                             |
+| Absolute or parent-escaping path      | accepted and resolved by Node path semantics     |
 
 ## Tool
 
